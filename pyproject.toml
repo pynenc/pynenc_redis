@@ -1,0 +1,154 @@
+[tool.poetry]
+name = "pynenc-redis"
+version = "0.1.0"
+description = "Redis plugging for pynenc, a distributed task queue for Python."
+authors = ["Jose Diaz"]
+license = "MIT License"
+readme = "README.md"
+homepage = "https://pynenc.org"
+documentation = "https://docs.pynenc.org"
+repository = "https://github.com/pynenc/pynenc"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
+packages = [{ include = "pynenc_redis" }]
+
+[tool.poetry.plugins."pynenc.plugins"]
+redis_builder = "pynenc_redis.builder:RedisBuilderPlugin"
+redis_orchestrator = "pynenc_redis.orchestrator.redis_orchestrator"
+redis_state_backend = "pynenc_redis.state_backend.redis_state_backend"
+redis_broker = "pynenc_redis.broker.redis_broker"
+redis_arg_cache = "pynenc_redis.arg_cache.redis_arg_cache"
+redis_trigger = "pynenc_redis.trigger.redis_trigger"
+
+[tool.poetry.dependencies]
+python = ">=3.11.6,<4.0"
+pynenc = { version = "0.1.0rc101.dev95", extras = ["monitor", "tests"], source = "testpypi" }
+# pynenc = { path = "../pynenc", extras = ["monitor", "tests"] }
+redis = ">=4.6.0"
+
+[[tool.poetry.source]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+priority = "explicit"
+
+[tool.poetry.group.dev.dependencies]
+black = "23.11.0"
+pytest = ">=8.2.0"
+pytest-asyncio = "^0.25.3"
+pytest-timeout = "^2.2.0"
+coverage = { version = ">=7.2.6,<8.0", extras = ["toml"] }
+mypy = "1.7.0"
+types-redis = "4.6.0.2"
+types-PyYAML = "6.0.12.12"
+pre-commit = "^3.5.0"
+types-requests = "^2.32.0.20250602"
+fakeredis = "^2.21.0"
+testcontainers = {extras = ["redis"], version = "^4.13.0"}
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^7.0"
+myst-parser = "^2"
+furo = "^2023"
+sphinx-copybutton = "^0.5.2"
+sphinx-design = "^0.5.0"
+sphinx-inline-tabs = "^2023.4.21"
+sphinx-autodoc2 = "^0.5.0"
+
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+required-version = '23.11.0'
+exclude = '''
+/(
+    \.mypy_cache
+    | \.env
+    | \.venv
+)/
+'''
+
+
+# [tool.flake8]
+# max-line-length = 88
+# exclude = [".venv", ".env", ".eggs"]
+# ignore = [
+#     "E203",  # Whitespace before ':' (conflicts with black)
+#     "W503",  # Line break before binary operator (conflicts with black)
+# ]
+
+[tool.ruff]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    # "I",  # isort # using isort for now
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501", # line too long, handled by black
+    # "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    # "W191", # indentation contains tabs
+]
+
+[tool.mypy]
+files = ["pynenc_redis"]
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+exclude = 'venv,env'
+show_error_codes = true
+pretty = true
+allow_redefinition = true
+no_implicit_optional = true
+strict_equality = true
+
+# Add mypy module configuration for croniter
+[[tool.mypy.overrides]]
+module = "croniter.*"
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+log_cli = true
+filterwarnings = [
+    "ignore:Running in a secondary thread. Signal handling will be skipped.:UserWarning",
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+]
+timeout = 30
+
+[tool.coverage.run]
+omit = [
+    "tests/*",  # Exclude all files in the tests directory
+]
+relative_files = true # to combine coverage data from multiple processes
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if (typing\\.)?TYPE_CHECKING:",
+    "^\\s*\\.\\.\\.\\s*$",  # ... ellipsis
+    "if __name__ == .__main__.:",
+]
+
