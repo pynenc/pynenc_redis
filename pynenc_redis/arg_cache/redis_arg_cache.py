@@ -2,8 +2,8 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import redis
-
 from pynenc.arg_cache.base_arg_cache import BaseArgCache
+
 from pynenc_redis.conf.config_arg_cache import ConfigArgCacheRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key

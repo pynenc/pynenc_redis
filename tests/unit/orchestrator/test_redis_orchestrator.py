@@ -1,13 +1,14 @@
 from typing import TYPE_CHECKING
 
 import pytest
+from pynenc_tests.conftest import MockPynenc
 
 from pynenc_redis.orchestrator.redis_orchestrator import PendingInvocationLockError
-from pynenc_tests.conftest import MockPynenc
 
 if TYPE_CHECKING:
     from pynenc.app import Pynenc
     from pynenc.invocation import DistributedInvocation
+
     from pynenc_redis.orchestrator.redis_orchestrator import RedisOrchestrator
 
 
@@ -18,6 +19,7 @@ _mock_base_app = MockPynenc()
 def task0() -> None:
     ...
 
+
 def test_set_pending_status_lock_error(app_instance: "Pynenc") -> None:
     """
     Test that _set_invocation_pending_status raises PendingInvocationLockError
@@ -25,7 +27,7 @@ def test_set_pending_status_lock_error(app_instance: "Pynenc") -> None:
     """
     # Create a test invocation
     task0.app = app_instance
-    invocation: "DistributedInvocation" = task0() # type: ignore
+    invocation: "DistributedInvocation" = task0()  # type: ignore
     orchestrator: "RedisOrchestrator" = app_instance.orchestrator  # type: ignore
 
     # Register the invocation

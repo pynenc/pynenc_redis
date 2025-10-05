@@ -1,8 +1,7 @@
 from cistell import ConfigField
-
 from pynenc.conf.config_orchestrator import ConfigOrchestrator
-from pynenc_redis.conf.config_redis import ConfigRedis
 
+from pynenc_redis.conf.config_redis import ConfigRedis
 
 
 class ConfigOrchestratorRedis(ConfigOrchestrator, ConfigRedis):

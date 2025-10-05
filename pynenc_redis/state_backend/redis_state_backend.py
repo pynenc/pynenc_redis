@@ -1,21 +1,20 @@
-import json
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Iterator
 
 import redis
-
 from pynenc.exceptions import InvocationNotFoundError
-from pynenc_redis.conf.config_redis import ConfigRedis
-from pynenc_redis.conf.config_state_backend import ConfigStateBackendRedis
 from pynenc.invocation.dist_invocation import DistributedInvocation
 from pynenc.state_backend.base_state_backend import BaseStateBackend, InvocationHistory
+from pynenc.workflow import WorkflowIdentity
+
+from pynenc_redis.conf.config_redis import ConfigRedis
+from pynenc_redis.conf.config_state_backend import ConfigStateBackendRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key
-from pynenc.workflow import WorkflowIdentity
 
 if TYPE_CHECKING:
     from pynenc.app import AppInfo, Pynenc
-    from pynenc.types import Params, Result
+    from pynenc.types import Result
 
 
 class RedisStateBackend(BaseStateBackend):
@@ -49,9 +48,7 @@ class RedisStateBackend(BaseStateBackend):
         """Clears all data from the Redis backend for the current `app.app_id`."""
         self.key.purge(self.client)
 
-    def _upsert_invocations(
-        self, invocations: list["DistributedInvocation"]
-    ) -> None:
+    def _upsert_invocations(self, invocations: list["DistributedInvocation"]) -> None:
         """
         Updates or inserts multiple invocations.
 
@@ -133,8 +130,7 @@ class RedisStateBackend(BaseStateBackend):
         :param Exception exception: The exception raised
         """
         self.client.set(
-            self.key.exception(invocation_id),
-            self.serialize_exception(exception)
+            self.key.exception(invocation_id), self.serialize_exception(exception)
         )
 
     def _get_exception(self, invocation_id: str) -> Exception:
@@ -197,7 +193,7 @@ class RedisStateBackend(BaseStateBackend):
         :raises ValueError: If app info is not found
         """
         from pynenc.app import AppInfo
-        
+
         app_info_data = self.client.get(self.key.all_apps_info_key(self.app.app_id))
 
         if not app_info_data:
@@ -247,9 +243,10 @@ class RedisStateBackend(BaseStateBackend):
         self.client.sadd(workflow_types_key, workflow_identity.workflow_type)
 
         # Add workflow_id to the set for this workflow_type
-        workflow_type_index_key = self.key.workflow_type_index(workflow_identity.workflow_type)
+        workflow_type_index_key = self.key.workflow_type_index(
+            workflow_identity.workflow_type
+        )
         self.client.sadd(workflow_type_index_key, workflow_identity.workflow_id)
-
 
     def get_all_workflow_types(self) -> Iterator[str]:
         """

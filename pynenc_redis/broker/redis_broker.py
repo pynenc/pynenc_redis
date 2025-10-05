@@ -2,15 +2,16 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Optional
 
 import redis
-
 from pynenc.broker.base_broker import BaseBroker
-from pynenc_redis.conf.config_broker import ConfigBrokerRedis
 from pynenc.invocation.dist_invocation import DistributedInvocation
+
+from pynenc_redis.conf.config_broker import ConfigBrokerRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key
 
 if TYPE_CHECKING:
     from pynenc.app import Pynenc
+
 
 class RedisBroker(BaseBroker):
     """
@@ -54,8 +55,9 @@ class RedisBroker(BaseBroker):
         :param DistributedInvocation invocation: The invocation to be queued.
         """
         self.client.rpush(self.key.default_queue(), invocation.to_json())
-        self.app.logger.debug(f"Routed invocation {invocation.invocation_id} to Redis queue")
-
+        self.app.logger.debug(
+            f"Routed invocation {invocation.invocation_id} to Redis queue"
+        )
 
     def route_invocations(self, invocations: list[DistributedInvocation]) -> None:
         """

@@ -1,14 +1,15 @@
-import pytest
 from typing import TYPE_CHECKING
 
-from testcontainers.redis import RedisContainer
+import pytest
 from docker.errors import DockerException
-
 from pynenc import PynencBuilder
+from testcontainers.redis import RedisContainer
 
 if TYPE_CHECKING:
-    from pynenc import Pynenc
     from collections.abc import Generator
+
+    from pynenc import Pynenc
+
 
 @pytest.fixture(scope="function")
 def app_instance_builder() -> "Generator['PynencBuilder', None, None]":
@@ -28,8 +29,11 @@ def app_instance_builder() -> "Generator['PynencBuilder', None, None]":
             "Docker is not running or not accessible. Please start Docker to run integration tests."
         ) from e
 
+
 @pytest.fixture(scope="function")
-def app_instance(app_instance_builder: "PynencBuilder") -> "Generator['Pynenc', None, None]":
+def app_instance(
+    app_instance_builder: "PynencBuilder",
+) -> "Generator['Pynenc', None, None]":
     """
     Fixture that provides a Pynenc app instance built from the app_instance_builder.
 
