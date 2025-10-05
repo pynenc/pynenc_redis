@@ -1,4 +1,5 @@
 from pynenc.conf.config_broker import ConfigBroker
+
 from pynenc_redis.conf.config_redis import ConfigRedis
 
 

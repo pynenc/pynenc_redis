@@ -21,35 +21,33 @@ if TYPE_CHECKING:
 class RedisBuilderPlugin:
     """
     Redis plugin that provides builder methods for Redis backend configuration.
-    
+
     This class will be moved to the pynenc-redis plugin package and registered
     via entry points to extend PynencBuilder with Redis-specific methods.
     """
 
     @staticmethod
-    def register_builder_methods(builder_class: type) -> None:
+    def register_builder_methods(builder_class: type["PynencBuilder"]) -> None:
         """
         Register Redis builder methods with PynencBuilder.
-        
+
         This method is called automatically when the plugin is discovered via entry points.
-        
-        :param type builder_class: The PynencBuilder class to extend
+
+        :param type["PynencBuilder"] builder_class: The PynencBuilder class to extend
         """
         # Register main Redis method
         builder_class.register_plugin_method("redis", redis)
-        
+
         # Register component-specific methods
         builder_class.register_plugin_method("redis_arg_cache", redis_arg_cache)
         builder_class.register_plugin_method("redis_trigger", redis_trigger)
-        
+
         # Register configuration validator
         builder_class.register_plugin_validator(validate_redis_config)
 
 
 def redis(
-    builder: "PynencBuilder",
-    url: str | None = None,
-    db: int | None = None
+    builder: "PynencBuilder", url: str | None = None, db: int | None = None
 ) -> "PynencBuilder":
     """
     Configure Redis components for the Pynenc application.
@@ -115,11 +113,13 @@ def redis_arg_cache(
             "Redis arg cache requires redis configuration. Call redis() first."
         )
 
-    builder._config.update({
-        "arg_cache_cls": "RedisArgCache",
-        "min_size_to_cache": min_size_to_cache,
-        "local_cache_size": local_cache_size,
-    })
+    builder._config.update(
+        {
+            "arg_cache_cls": "RedisArgCache",
+            "min_size_to_cache": min_size_to_cache,
+            "local_cache_size": local_cache_size,
+        }
+    )
     builder._plugin_components.add("redis")
     return builder
 
@@ -149,11 +149,13 @@ def redis_trigger(
             "Redis trigger requires redis configuration. Call redis() first."
         )
 
-    builder._config.update({
-        "trigger_cls": "RedisTrigger",
-        "scheduler_interval_seconds": scheduler_interval_seconds,
-        "enable_scheduler": enable_scheduler,
-    })
+    builder._config.update(
+        {
+            "trigger_cls": "RedisTrigger",
+            "scheduler_interval_seconds": scheduler_interval_seconds,
+            "enable_scheduler": enable_scheduler,
+        }
+    )
     builder._plugin_components.add("redis")
     return builder
 
@@ -168,25 +170,27 @@ def validate_redis_config(config: dict[str, Any]) -> None:
     :param dict[str, Any] config: The builder configuration dictionary
     :raises ValueError: If Redis configuration is invalid
     """
-    # Check if any Redis components are being used
-    redis_components = [
-        "RedisOrchestrator", "RedisBroker", "RedisStateBackend", 
-        "RedisArgCache", "RedisTrigger"
-    ]
-    
     uses_redis = any(
-        config.get(key, "").startswith("Redis") 
-        for key in ["orchestrator_cls", "broker_cls", "state_backend_cls", "arg_cache_cls", "trigger_cls"]
+        config.get(key, "").startswith("Redis")
+        for key in [
+            "orchestrator_cls",
+            "broker_cls",
+            "state_backend_cls",
+            "arg_cache_cls",
+            "trigger_cls",
+        ]
     )
-    
+
     if uses_redis:
         # Ensure Redis connection configuration is present
-        has_redis_config = any([
-            config.get("redis_url"),
-            config.get("redis_host"),
-            config.get("redis_db") is not None
-        ])
-        
+        has_redis_config = any(
+            [
+                config.get("redis_url"),
+                config.get("redis_host"),
+                config.get("redis_db") is not None,
+            ]
+        )
+
         if not has_redis_config:
             raise ValueError(
                 "Redis components require connection configuration. "

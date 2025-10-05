@@ -1,5 +1,4 @@
 from cistell import ConfigField
-
 from pynenc.conf.config_base import ConfigPynencBase
 
 

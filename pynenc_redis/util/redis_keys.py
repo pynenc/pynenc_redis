@@ -67,9 +67,9 @@ class Key:
     def status_to_invocations(self, status: "InvocationStatus") -> str:
         """Get the Redis key for the set of invocation IDs with a specific status."""
         return f"{self.prefix}status:{status}"
-    
+
     def invocation_to_status(self, invocation_id: str) -> str:
-        return f"{self.prefix}invocation_status:{invocation_id}"    
+        return f"{self.prefix}invocation_status:{invocation_id}"
 
     def pending_timer(self, invocation_id: str) -> str:
         return f"{self.prefix}pending_timer:{invocation_id}"
@@ -85,7 +85,7 @@ class Key:
 
     def call_to_invocation(self, call_id: str) -> str:
         return f"{self.prefix}call_to_invocation:{call_id}"
-    
+
     def invocation_to_call(self, invocation_id: str) -> str:
         """Get the Redis key for mapping an invocation_id to its call_id."""
         return f"{self.prefix}invocation_to_call:{invocation_id}"
@@ -212,7 +212,6 @@ class Key:
         """
         return f"{self.prefix}:trigger:run_claim:{trigger_run_id}"
 
-
     def workflow_run_by_id(self, workflow_id: str) -> str:
         """
         Get key for storing a workflow run by its unique workflow_id.
@@ -230,7 +229,7 @@ class Key:
         :return: Redis key for the workflow type index set
         """
         return f"{self.prefix}workflow:type_index:{workflow_type}"
-    
+
     def workflow_types(self) -> str:
         """
         Get key for storing workflow types set.

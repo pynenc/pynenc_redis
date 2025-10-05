@@ -2,13 +2,15 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cached_property
 from time import time
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Iterator
 
 import redis
-
 from pynenc.call import Call
-from pynenc_redis.conf.config_orchestrator import ConfigOrchestratorRedis
-from pynenc.exceptions import CycleDetectedError, PendingInvocationLockError, InvocationOnFinalStatusError
+from pynenc.exceptions import (
+    CycleDetectedError,
+    InvocationOnFinalStatusError,
+    PendingInvocationLockError,
+)
 from pynenc.invocation.dist_invocation import DistributedInvocation
 from pynenc.invocation.status import InvocationStatus
 from pynenc.orchestrator.base_orchestrator import (
@@ -17,6 +19,8 @@ from pynenc.orchestrator.base_orchestrator import (
     BaseOrchestrator,
 )
 from pynenc.types import Params, Result
+
+from pynenc_redis.conf.config_orchestrator import ConfigOrchestratorRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key
 
@@ -121,7 +125,9 @@ class RedisCycleControl(BaseCycleControl):
         # Remove outgoing edges
         self.client.delete(self.key.edge(call_id))
         # Remove incoming edges: for each caller in reverse_edge, remove call_id from their edge set
-        for caller_call_id_bytes in self.client.smembers(self.key.reverse_edge(call_id)):
+        for caller_call_id_bytes in self.client.smembers(
+            self.key.reverse_edge(call_id)
+        ):
             caller_call_id = caller_call_id_bytes.decode()
             self.client.srem(self.key.edge(caller_call_id), call_id)
         # Remove reverse edge set for call_id
@@ -259,7 +265,7 @@ class RedisBlockingControl(BaseBlockingControl):
         self.client.delete(self.key.waiting_for(waited_invocation_id))
         self.client.delete(self.key.waited_by(waited_invocation_id))
         self.client.zrem(self.key.all_waited(), waited_invocation_id)
-        self.client.zrem(self.key.not_waiting(), waited_invocation_id)        
+        self.client.zrem(self.key.not_waiting(), waited_invocation_id)
 
     def get_blocking_invocations(self, max_num_invocations: int) -> Iterator[str]:
         """
@@ -295,9 +301,9 @@ class RedisBlockingControl(BaseBlockingControl):
                     self.app.logger.warning(
                         f"Skipping invocation {invocation_id} in get_blocking_invocations: "
                         "status not found in Redis"
-                    )          
+                    )
                 if max_num_invocations == 0:
-                    break                              
+                    break
 
 
 class RedisOrchestrator(BaseOrchestrator):
@@ -362,18 +368,20 @@ class RedisOrchestrator(BaseOrchestrator):
             invocation_ids.add(inv_id.decode() if isinstance(inv_id, bytes) else inv_id)
         if key_serialized_arguments:
             for arg, val in key_serialized_arguments.items():
-                arg_val_ids = set(
+                arg_val_ids = {
                     id.decode() if isinstance(id, bytes) else id
                     for id in self.client.smembers(self.key.args(task_id, arg, val))
-                )
+                }
                 invocation_ids &= arg_val_ids
         if statuses:
             status_ids: set[str] = set()
             for status in statuses:
-                status_ids |= set(
+                status_ids |= {
                     id.decode() if isinstance(id, bytes) else id
-                    for id in self.client.smembers(self.key.status_to_invocations(status))
-                )
+                    for id in self.client.smembers(
+                        self.key.status_to_invocations(status)
+                    )
+                }
             invocation_ids &= status_ids
         for inv_id in invocation_ids:
             yield inv_id
@@ -435,17 +443,27 @@ class RedisOrchestrator(BaseOrchestrator):
         """
         for invocation in invocations:
             # Skip if already registered
-            if self.client.exists(self.key.invocation_to_status(invocation.invocation_id)):
+            if self.client.exists(
+                self.key.invocation_to_status(invocation.invocation_id)
+            ):
                 continue
 
             # Add to task's invocation set
-            self.client.sadd(self.key.task(invocation.task.task_id), invocation.invocation_id)
+            self.client.sadd(
+                self.key.task(invocation.task.task_id), invocation.invocation_id
+            )
 
             # Add to call's invocation set
-            self.client.sadd(self.key.call_to_invocation(invocation.call_id), invocation.invocation_id)
+            self.client.sadd(
+                self.key.call_to_invocation(invocation.call_id),
+                invocation.invocation_id,
+            )
 
             # Store invocation_id -> call_id mapping
-            self.client.set(self.key.invocation_to_call(invocation.invocation_id), invocation.call_id)
+            self.client.set(
+                self.key.invocation_to_call(invocation.invocation_id),
+                invocation.call_id,
+            )
 
             # Set status to REGISTERED
             self._set_status(invocation.invocation_id, InvocationStatus.REGISTERED)
@@ -454,7 +472,9 @@ class RedisOrchestrator(BaseOrchestrator):
             self.client.set(self.key.invocation_retries(invocation.invocation_id), 0)
 
     def get_status(self, invocation_id: str) -> InvocationStatus:
-        if encoded_status := self.client.get(self.key.invocation_to_status(invocation_id)):
+        if encoded_status := self.client.get(
+            self.key.invocation_to_status(invocation_id)
+        ):
             return InvocationStatus(encoded_status.decode())
         raise StatusNotFound(f"Invocation status {invocation_id} not found in Redis")
 
@@ -463,7 +483,6 @@ class RedisOrchestrator(BaseOrchestrator):
         pipeline.sadd(self.key.status_to_invocations(status), invocation_id)
         pipeline.set(self.key.invocation_to_status(invocation_id), status.value)
         pipeline.execute()
-
 
     def _set_invocation_status(
         self,
@@ -480,12 +499,16 @@ class RedisOrchestrator(BaseOrchestrator):
         try:
             previous_status = self.get_status(invocation_id)
             if previous_status.is_final():
-                raise InvocationOnFinalStatusError(invocation_id, previous_status, status)
+                raise InvocationOnFinalStatusError(
+                    invocation_id, previous_status, status
+                )
         except StatusNotFound:
             previous_status = None
 
         if previous_status is not None:
-            self.client.srem(self.key.status_to_invocations(previous_status), invocation_id)
+            self.client.srem(
+                self.key.status_to_invocations(previous_status), invocation_id
+            )
         # Add to new status set
         self._set_status(invocation_id, status)
         # Clean up pending status if applicable
@@ -513,7 +536,9 @@ class RedisOrchestrator(BaseOrchestrator):
             previous_status = self.get_status(invocation_id)
             if previous_status == InvocationStatus.PENDING:
                 raise PendingInvocationLockError(invocation_id)
-            self.client.set(self.key.previous_status(invocation_id), previous_status.value)
+            self.client.set(
+                self.key.previous_status(invocation_id), previous_status.value
+            )
             self._set_invocation_status(invocation_id, InvocationStatus.PENDING)
         finally:
             lock.release()
@@ -543,8 +568,8 @@ class RedisOrchestrator(BaseOrchestrator):
         """
         for key, value in invocation.serialized_arguments.items():
             self.client.sadd(
-                self.key.args(invocation.task.task_id, key, value), 
-                invocation.invocation_id
+                self.key.args(invocation.task.task_id, key, value),
+                invocation.invocation_id,
             )
 
     def set_up_invocation_auto_purge(self, invocation_id: str) -> None:
@@ -558,7 +583,7 @@ class RedisOrchestrator(BaseOrchestrator):
             {invocation_id: time()},
         )
 
-    def auto_purge(self) -> None:    
+    def auto_purge(self) -> None:
         """
         Automatically purges invocations that have been in their final state beyond a specified duration.
 
@@ -584,14 +609,18 @@ class RedisOrchestrator(BaseOrchestrator):
                 # clean up task-status keys
                 status = self.get_status(invocation_id)
                 self.client.srem(self.key.status_to_invocations(status), invocation_id)
-                if not self.client.smembers(self.key.status_to_invocations(invocation.status)):
-                    self.client.delete(self.key.status_to_invocations(invocation.status))
+                if not self.client.smembers(
+                    self.key.status_to_invocations(invocation.status)
+                ):
+                    self.client.delete(
+                        self.key.status_to_invocations(invocation.status)
+                    )
             except KeyError:
                 self.app.logger.warning(f"{invocation_id=} not found during auto purge")
             self.client.delete(self.key.invocation_to_status(invocation_id))
             self.client.zrem(self.key.invocation_auto_purge(), invocation_id)
             self.client.delete(self.key.pending_timer(invocation_id))
-            self.client.delete(self.key.previous_status(invocation_id))            
+            self.client.delete(self.key.previous_status(invocation_id))
 
     def get_invocation_status(self, invocation_id: str) -> "InvocationStatus":
         """
@@ -610,7 +639,9 @@ class RedisOrchestrator(BaseOrchestrator):
                     prev_status_key = self.key.previous_status(invocation_id)
                     encoded_previous_status = self.client.get(prev_status_key)
                     if encoded_previous_status:
-                        previous_status = InvocationStatus(encoded_previous_status.decode())
+                        previous_status = InvocationStatus(
+                            encoded_previous_status.decode()
+                        )
                         self._set_invocation_status(invocation_id, previous_status)
                         self.app.logger.debug(
                             f"Synchronous resolved PENDING status for {invocation_id} to {previous_status}"
@@ -633,7 +664,9 @@ class RedisOrchestrator(BaseOrchestrator):
         :param invocation_id: The id of the invocation whose retry count is to be retrieved.
         :return: The number of retries for the invocation.
         """
-        if encoded_retries := self.client.get(self.key.invocation_retries(invocation_id)):
+        if encoded_retries := self.client.get(
+            self.key.invocation_retries(invocation_id)
+        ):
             return int(encoded_retries.decode())
         return 0
 

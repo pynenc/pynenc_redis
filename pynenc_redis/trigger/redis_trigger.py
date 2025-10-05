@@ -11,12 +11,12 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Optional
 
 import redis
-
-from pynenc_redis.conf.config_trigger import ConfigTriggerRedis
 from pynenc.trigger.base_trigger import BaseTrigger
 from pynenc.trigger.conditions import TriggerCondition, ValidCondition
 from pynenc.trigger.trigger_definitions import TriggerDefinition
 from pynenc.trigger.types import ConditionId
+
+from pynenc_redis.conf.config_trigger import ConfigTriggerRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key
 

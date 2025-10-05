@@ -1,6 +1,5 @@
-from cistell import ConfigField
-
 from pynenc.conf.config_trigger import ConfigTrigger
+
 from pynenc_redis.conf.config_redis import ConfigRedis
 
 
