@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pynenc-redis"
-version = "0.1.0"
+version = "0.1.1"
 description = "Redis plugging for pynenc, a distributed task queue for Python."
 authors = ["Jose Diaz"]
 license = "MIT License"
