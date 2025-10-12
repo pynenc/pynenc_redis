@@ -31,9 +31,6 @@ jobs:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
 
-      - name: Install dependencies
-        run: uv sync --all-extras
-
       - name: Check if there is a parent commit
         id: check-parent-commit
         run: |
@@ -45,15 +42,17 @@ jobs:
         uses: salsify/action-detect-and-tag-new-version@v2.0.1
         with:
           version-command: |
-            bash -o pipefail -c "uv version | awk '{ print \$2 }'"
+            uv version --short
 
       - name: Bump version for developmental release
         if: ${{ ! steps.check-version.outputs.tag }}
         run: |
-          # Bump patch version and add dev timestamp
           uv version --bump patch
           uv version --bump dev
-          echo "VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")" >> $GITHUB_ENV
+          echo "VERSION=$(uv version --short)" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: uv sync
 
       - name: Build package
         run: uv build
