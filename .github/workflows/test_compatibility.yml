@@ -25,21 +25,21 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies (minimum, core + tests only)
+      - name: Install dependencies (minimum, tests only)
         if: matrix.deps-version == 'minimum' && matrix.python-version >= '3.13'
-        run: uv sync --resolution=lowest-direct --extra tests
+        run: uv sync --resolution=lowest-direct --group tests
 
-      - name: Install dependencies (latest, core + tests only)
+      - name: Install dependencies (latest, tests only)
         if: matrix.deps-version == 'latest' && matrix.python-version >= '3.13'
-        run: uv sync --extra tests
+        run: uv sync --group tests
 
       - name: Install dependencies (minimum, all extras)
         if: matrix.deps-version == 'minimum' && matrix.python-version < '3.13'
-        run: uv sync --resolution=lowest-direct --all-extras
+        run: uv sync --resolution=lowest-direct --group tests --group monitor
 
       - name: Install dependencies (latest, all extras)
         if: matrix.deps-version == 'latest' && matrix.python-version < '3.13'
-        run: uv sync --all-extras
+        run: uv sync --group tests --group monitor
 
       - name: Run unit tests only (Python >=3.13)
         if: matrix.python-version >= '3.13'

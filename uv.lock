@@ -957,7 +957,7 @@ name = "pynenc-redis"
 version = "0.1.2"
 source = { editable = "." }
 dependencies = [
-    { name = "pynenc", extra = ["monitor", "tests"] },
+    { name = "pynenc" },
     { name = "redis" },
 ]
 
@@ -985,10 +985,16 @@ docs = [
     { name = "sphinx-design" },
     { name = "sphinx-inline-tabs" },
 ]
+monitor = [
+    { name = "pynenc", extra = ["monitor"] },
+]
+tests = [
+    { name = "pynenc", extra = ["tests"] },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "pynenc", extras = ["monitor", "tests"], specifier = ">=0.1.0rc101.dev109", index = "https://test.pypi.org/simple/" },
+    { name = "pynenc", specifier = ">=0.1.0rc101.dev109", index = "https://test.pypi.org/simple/" },
     { name = "redis", specifier = ">=4.6.0" },
 ]
 
@@ -1016,6 +1022,8 @@ docs = [
     { name = "sphinx-design", specifier = ">=0.5.0" },
     { name = "sphinx-inline-tabs", specifier = ">=2023.4.21" },
 ]
+monitor = [{ name = "pynenc", extras = ["monitor"], specifier = ">=0.1.0rc101.dev109", index = "https://test.pypi.org/simple/" }]
+tests = [{ name = "pynenc", extras = ["tests"], specifier = ">=0.1.0rc101.dev109", index = "https://test.pypi.org/simple/" }]
 
 [[package]]
 name = "pytest"

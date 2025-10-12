@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc[monitor,tests]>=0.1.0rc101.dev109",
+    "pynenc>=0.1.0rc101.dev109",
     "redis>=4.6.0"
 ]
 
@@ -57,6 +57,12 @@ dev = [
     "types-requests>=2.32.0.20250602",
     "fakeredis>=2.21.0",
     "testcontainers[redis]>=4.13.0",
+]
+tests = [
+    "pynenc[tests]>=0.1.0rc101.dev109",
+]
+monitor = [
+    "pynenc[monitor]>=0.1.0rc101.dev109",
 ]
 docs = [
     "sphinx>=7.0",
