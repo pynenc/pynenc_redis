@@ -56,14 +56,14 @@ def app_instance() -> "Generator['Pynenc', None, None]":
             lock_registry[name] = MockLock(*args, **kwargs)
         return lock_registry[name]
 
-    with patch.object(
-        mongo_client, "get_redis_client", return_value=fakeredis.FakeRedis()
-    ), patch("redis.ConnectionPool.from_url", lambda *a, **kw: None), patch(
-        "redis.Redis", fakeredis.FakeRedis
-    ), patch(
-        "redis.lock.Lock", MockLock
-    ), patch.object(
-        fakeredis.FakeRedis, "lock", mock_lock_factory
+    with (
+        patch.object(
+            mongo_client, "get_redis_client", return_value=fakeredis.FakeRedis()
+        ),
+        patch("redis.ConnectionPool.from_url", lambda *a, **kw: None),
+        patch("redis.Redis", fakeredis.FakeRedis),
+        patch("redis.lock.Lock", MockLock),
+        patch.object(fakeredis.FakeRedis, "lock", mock_lock_factory),
     ):
         app = PynencBuilder().redis(url="redis://localhost:6379/0").build()
         yield app  # type: ignore

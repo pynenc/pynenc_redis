@@ -16,8 +16,7 @@ _mock_base_app = MockPynenc()
 
 
 @_mock_base_app.task
-def task0() -> None:
-    ...
+def task0() -> None: ...
 
 
 def test_set_pending_status_lock_error(app_instance: "Pynenc") -> None:
