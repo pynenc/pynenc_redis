@@ -48,8 +48,10 @@ jobs:
         if: ${{ ! steps.check-version.outputs.tag }}
         run: |
           uv version --bump patch
-          uv version --bump dev
-          echo "VERSION=$(uv version --short)" >> $GITHUB_ENV
+          current_version=$(uv version --short)
+          dev_version="${current_version}.dev$(date +%s)"
+          uv version $dev_version
+          echo "VERSION=$dev_version" >> $GITHUB_ENV
 
       - name: Install dependencies
         run: uv sync
