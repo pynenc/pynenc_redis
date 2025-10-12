@@ -1,6 +1,6 @@
 [project]
 name = "pynenc-redis"
-version = "0.1.2"
+version = "0.1.3"
 description = "Redis plugging for pynenc, a distributed task queue for Python."
 authors = [{ name = "Luis Diaz", email = "code.luis.diaz@proton.me" }]
 license = { text = "MIT License" }
