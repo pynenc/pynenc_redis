@@ -1,8 +1,9 @@
 import threading
+from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import cached_property
 from time import time
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 import redis
 from pynenc.call import Call

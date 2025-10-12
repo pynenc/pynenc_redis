@@ -6,9 +6,9 @@ for persistence and coordination across multiple application instances.
 """
 
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cached_property
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import redis
 from pynenc.trigger.base_trigger import BaseTrigger
@@ -80,7 +80,7 @@ class RedisTrigger(BaseTrigger):
             condition.to_json(self.app),
         )
 
-    def get_condition(self, condition_id: str) -> Optional[TriggerCondition]:
+    def get_condition(self, condition_id: str) -> TriggerCondition | None:
         """
         Get a condition by its ID from Redis.
 
@@ -116,7 +116,7 @@ class RedisTrigger(BaseTrigger):
             trigger.trigger_id,
         )
 
-    def get_trigger(self, trigger_id: str) -> Optional[TriggerDefinition]:
+    def get_trigger(self, trigger_id: str) -> TriggerDefinition | None:
         """
         Get a trigger definition by ID from Redis.
 
@@ -287,7 +287,7 @@ class RedisTrigger(BaseTrigger):
         self,
         condition_id: str,
         execution_time: datetime,
-        expected_last_execution: Optional[datetime] = None,
+        expected_last_execution: datetime | None = None,
     ) -> bool:
         """
         Store the last execution time for a cron condition with optimistic locking.
@@ -387,7 +387,7 @@ class RedisTrigger(BaseTrigger):
         # Returns 1 if the key was set (claim successful), 0 otherwise
         result = self.client.set(
             claim_key,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             nx=True,  # Only set if key doesn't exist (SETNX)
             ex=expiration_seconds,  # Set expiration time
         )
@@ -413,7 +413,7 @@ class RedisTrigger(BaseTrigger):
         # Returns True if the key was set (claim successful), False otherwise
         result = self.client.set(
             claim_key,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             nx=True,  # Only set if key doesn't exist (SETNX)
             ex=expiration_seconds,  # Set expiration time
         )

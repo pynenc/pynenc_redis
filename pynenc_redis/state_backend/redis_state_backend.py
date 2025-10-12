@@ -1,5 +1,6 @@
+from collections.abc import Iterator
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 import redis
 from pynenc.exceptions import InvocationNotFoundError

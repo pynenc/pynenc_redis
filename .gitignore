@@ -168,3 +168,7 @@ cython_debug/
 docs/_build/
 # autodoc2 automodule
 docs/apidocs/
+
+# uv
+.venv/
+.python-version
