@@ -27,7 +27,7 @@ jobs:
           key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
 
       - name: Install dependencies
-        run: uv sync --extra monitor --extra tests
+        run: uv sync --group tests --group monitor
 
       - name: Run unit tests with coverage
         run: uv run coverage run -m pytest tests/unit
@@ -70,7 +70,7 @@ jobs:
           key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
 
       - name: Install dependencies
-        run: uv sync --extra monitor --extra tests
+        run: uv sync --group tests --group monitor
 
       - name: Run integration tests with coverage
         run: uv run coverage run -m pytest tests/integration
@@ -111,7 +111,7 @@ jobs:
           python-version: "3.11.7"
 
       - name: Install dependencies
-        run: uv sync --extra monitor --extra tests
+        run: uv sync --group tests --group monitor
 
       - name: Download all coverage artifacts
         uses: actions/download-artifact@v4
