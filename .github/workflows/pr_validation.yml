@@ -2,7 +2,7 @@ name: PR Validation
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    types: [opened, edited, synchronize, reopened, labeled]
 
 jobs:
   validate-pr:
@@ -48,7 +48,7 @@ jobs:
             comment += '\n\n### Requirements for Release Notes:\n';
             comment += '- **Title**: Use conventional commit format (e.g., `feat(scope): description`)\n';
             comment += '- **Description**: Minimum 50 characters explaining what and why\n';
-            comment += '- **Labels**: Required for categorization (feature, fix, docs, etc.)\n';
+            comment += '- **Labels**: Optional but recommended for categorization\n';
             comment += '- **Quality**: No placeholder text like "WIP" or "TODO"\n\n';
             comment += '_These requirements ensure quality automated release notes via Release Drafter._';
 
@@ -75,6 +75,10 @@ jobs:
                   issue_number: context.issue.number,
                   owner: context.repo.owner,
                   repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            }
                   body: comment
                 });
               }

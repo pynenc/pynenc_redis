@@ -143,23 +143,22 @@ class PRValidator:
         pr_labels = {label.name for label in self.pr.labels}
 
         if not pr_labels:
-            self.errors.append(
-                "❌ **No labels**: PRs must have labels for proper release notes categorization.\n"
-                f"   Required labels: {', '.join(sorted(self.RELEASE_DRAFTER_LABELS))}"
+            self.warnings.append(
+                "⚠️ **No labels**: Consider adding labels for better release notes categorization.\n"
+                f"   Suggested labels: {', '.join(sorted(self.RELEASE_DRAFTER_LABELS))}"
             )
             return
 
         # Check if any label matches Release Drafter categories
         if not pr_labels & self.RELEASE_DRAFTER_LABELS:
-            self.errors.append(
-                "❌ **Invalid labels**: PR must have at least one valid label for release notes:\n"
+            self.warnings.append(
+                "⚠️ **Missing categorization labels**: Add labels for release notes:\n"
                 "   - Feature: `feature`, `enhancement`\n"
                 "   - Bug Fix: `fix`, `bugfix`, `bug`\n"
                 "   - Documentation: `documentation`, `docs`\n"
                 "   - Testing: `test`, `tests`\n"
                 "   - Maintenance: `chore`, `refactor`, `style`\n"
-                "   - Version bump: `major`, `minor`, `patch`\n"
-                f"   Current labels: {', '.join(sorted(pr_labels))}"
+                "   - Version bump: `major`, `minor`, `patch`"
             )
 
     def _write_results(self) -> None:

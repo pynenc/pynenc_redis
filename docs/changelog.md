@@ -9,11 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 
 - PR validation workflow to ensure PR descriptions meet quality standards for automated release notes
-- Validates conventional commit format and appropriate labels for Release Drafter categorization
-- Automatic label assignment based on PR title via Release Drafter autolabeler
-- Made PR labels mandatory for proper release notes categorization
-- Release Drafter now runs on PR events to enable automatic labeling
+- Validates conventional commit format with minimum description length
+- Warns about missing labels for better release notes categorization
 - Commit message validation via pre-commit hooks to enforce conventional commit format
+- Release Drafter integration for automated release note generation from merged PRs
 
 ## [0.1.0] - 2025-09-05
 
