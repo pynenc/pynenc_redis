@@ -48,7 +48,7 @@ jobs:
             comment += '\n\n### Requirements for Release Notes:\n';
             comment += '- **Title**: Use conventional commit format (e.g., `feat(scope): description`)\n';
             comment += '- **Description**: Minimum 50 characters explaining what and why\n';
-            comment += '- **Labels**: Add appropriate labels for categorization\n';
+            comment += '- **Labels**: Required for categorization (feature, fix, docs, etc.)\n';
             comment += '- **Quality**: No placeholder text like "WIP" or "TODO"\n\n';
             comment += '_These requirements ensure quality automated release notes via Release Drafter._';
 
