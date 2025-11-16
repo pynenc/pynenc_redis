@@ -108,6 +108,12 @@ class Key:
     def not_waiting(self) -> str:
         return f"{self.prefix}not_waiting"
 
+    def runner_heartbeat(self, runner_id: str) -> str:
+        return f"{self.prefix}runner_heartbeat:{runner_id}"
+
+    def runner_heartbeats(self) -> str:
+        return f"{self.prefix}runner_heartbeats"
+
     def history(self, invocation_id: str) -> str:
         return f"{self.prefix}history:{invocation_id}"
 

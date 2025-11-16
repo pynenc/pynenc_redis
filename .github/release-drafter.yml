@@ -40,17 +40,6 @@ template: |
   pip install pynenc-redis==$RESOLVED_VERSION
   ```
 
-  Or with specific Redis components:
-  ```bash
-  pip install pynenc-redis[full]==$RESOLVED_VERSION
-  ```
-
-  ## Requirements
-
-  - Python >= 3.11.6
-  - Pynenc >= 0.0.24
-  - Redis >= 4.6.0
-
 version-resolver:
   major:
     labels:

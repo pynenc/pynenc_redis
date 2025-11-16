@@ -49,7 +49,7 @@ class RedisStateBackend(BaseStateBackend):
         """Clears all data from the Redis backend for the current `app.app_id`."""
         self.key.purge(self.client)
 
-    def _upsert_invocations(self, invocations: list["DistributedInvocation"]) -> None:
+    def upsert_invocations(self, invocations: list["DistributedInvocation"]) -> None:
         """
         Updates or inserts multiple invocations.
 

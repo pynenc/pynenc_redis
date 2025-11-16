@@ -1,7 +1,13 @@
 .PHONY: install
 install:
-	@echo "Installing dependencies via UV with all extras..."
-	uv sync --all-extras
+	@echo "Installing dependencies via UV with all extras and test dependencies..."
+	uv sync --all-extras --all-groups
+
+.PHONY: refresh-deps
+refresh-deps:
+	@echo "Refreshing uv cache and checking for dependency updates..."
+	uv lock --refresh
+	uv sync
 
 .PHONY: install-pre-commit
 install-pre-commit: install
