@@ -7,7 +7,7 @@ install:
 refresh-deps:
 	@echo "Refreshing uv cache and checking for dependency updates..."
 	uv lock --refresh
-	uv sync
+	uv sync --all-extras --all-groups
 
 .PHONY: install-pre-commit
 install-pre-commit: install

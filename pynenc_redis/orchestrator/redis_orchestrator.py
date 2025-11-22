@@ -18,8 +18,8 @@ from pynenc.invocation.status import (
     InvocationStatusRecord,
     status_record_transition,
 )
+from pynenc.orchestrator.atomic_service import ActiveRunnerInfo
 from pynenc.orchestrator.base_orchestrator import (
-    ActiveRunnerInfo,
     BaseBlockingControl,
     BaseCycleControl,
     BaseOrchestrator,
@@ -684,6 +684,27 @@ class RedisOrchestrator(BaseOrchestrator):
 
         pipeline.execute()
 
+    def record_atomic_service_execution(
+        self, runner_ctx: "RunnerContext", start_time: datetime, end_time: datetime
+    ) -> None:
+        """
+        Record the latest atomic service execution window for a runner.
+
+        :param runner_ctx: The runner context
+        :param start_time: Service execution start timestamp
+        :param end_time: Service execution end timestamp
+        """
+        runner_id = runner_ctx.runner_id
+        runner_key = self.key.runner_heartbeat(runner_id)
+
+        self.client.hset(
+            runner_key,
+            mapping={
+                "last_service_start": start_time.timestamp(),
+                "last_service_end": end_time.timestamp(),
+            },
+        )
+
     def get_active_runners(self) -> list[ActiveRunnerInfo]:
         """Retrieve all active runners with heartbeat information."""
         from pynenc.runner.runner_context import RunnerContext
@@ -720,6 +741,19 @@ class RedisOrchestrator(BaseOrchestrator):
                 runner_ctx = RunnerContext.from_json(
                     runner_data[b"runner_context_json"].decode()
                 )
+
+                # Optional service execution timestamps
+                last_service_start = None
+                last_service_end = None
+                if b"last_service_start" in runner_data:
+                    last_service_start = datetime.fromtimestamp(
+                        float(runner_data[b"last_service_start"].decode()), tz=UTC
+                    )
+                if b"last_service_end" in runner_data:
+                    last_service_end = datetime.fromtimestamp(
+                        float(runner_data[b"last_service_end"].decode()), tz=UTC
+                    )
+
                 active_runners.append(
                     ActiveRunnerInfo(
                         runner_ctx=runner_ctx,
@@ -727,6 +761,8 @@ class RedisOrchestrator(BaseOrchestrator):
                             float(runner_data[b"creation_timestamp"].decode()), tz=UTC
                         ),
                         last_heartbeat=datetime.fromtimestamp(last_heartbeat, tz=UTC),
+                        last_service_start=last_service_start,
+                        last_service_end=last_service_end,
                     )
                 )
             except (ValueError, KeyError):
