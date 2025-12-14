@@ -117,6 +117,10 @@ class Key:
     def history(self, invocation_id: str) -> str:
         return f"{self.prefix}history:{invocation_id}"
 
+    def history_by_timestamp(self) -> str:
+        """Get key for sorted set of all history entries indexed by timestamp."""
+        return f"{self.prefix}history_by_timestamp"
+
     def result(self, invocation_id: str) -> str:
         return f"{self.prefix}result:{invocation_id}"
 

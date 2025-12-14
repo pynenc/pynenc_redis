@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from datetime import datetime
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -80,11 +81,16 @@ class RedisStateBackend(BaseStateBackend):
         :param list[str] invocation_ids: The IDs of the invocations.
         :param InvocationHistory invocation_history: The history record to add.
         """
+        timestamp_score = invocation_history._timestamp.timestamp()
+        history_json = invocation_history.to_json()
+
         for invocation_id in invocation_ids:
-            self.client.rpush(
-                self.key.history(invocation_id),
-                invocation_history.to_json(),
-            )
+            # Store in per-invocation list for ordered retrieval
+            self.client.rpush(self.key.history(invocation_id), history_json)
+            # Store in timestamp-indexed sorted set for time-range queries
+            # Use invocation_id:timestamp as member to ensure uniqueness
+            member = f"{invocation_id}:{timestamp_score}:{history_json}"
+            self.client.zadd(self.key.history_by_timestamp(), {member: timestamp_score})
 
     def _get_history(self, invocation_id: str) -> list[InvocationHistory]:
         """
@@ -322,3 +328,102 @@ class RedisStateBackend(BaseStateBackend):
         sub_invocations_key = self.key.workflow_sub_invocations(workflow_id)
         sub_invocation_ids = self.client.smembers(sub_invocations_key)
         return (sid.decode() for sid in sub_invocation_ids)
+
+    def iter_invocations_in_timerange(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        batch_size: int = 100,
+    ) -> Iterator[list[str]]:
+        """
+        Iterate over invocation IDs that have history within time range.
+
+        Uses Redis sorted set with timestamp scores for efficient range queries.
+
+        :param start_time: Start of time range
+        :param end_time: End of time range
+        :param batch_size: Number of invocation IDs per batch
+        :return: Iterator yielding batches of invocation IDs
+        """
+        start_score = start_time.timestamp()
+        end_score = end_time.timestamp()
+        offset = 0
+
+        while True:
+            # Get members in score range with pagination
+            members = self.client.zrangebyscore(
+                self.key.history_by_timestamp(),
+                min=start_score,
+                max=end_score,
+                start=offset,
+                num=batch_size,
+            )
+
+            if not members:
+                break
+
+            # Extract unique invocation IDs from members
+            # Member format: "invocation_id:timestamp:history_json"
+            seen_ids: set[str] = set()
+            batch: list[str] = []
+            for member in members:
+                member_str = member.decode() if isinstance(member, bytes) else member
+                invocation_id = member_str.split(":", 1)[0]
+                if invocation_id not in seen_ids:
+                    seen_ids.add(invocation_id)
+                    batch.append(invocation_id)
+
+            if batch:
+                yield batch
+
+            offset += batch_size
+
+    def iter_history_in_timerange(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        batch_size: int = 100,
+    ) -> Iterator[list[InvocationHistory]]:
+        """
+        Iterate over history entries within time range.
+
+        Uses Redis sorted set with timestamp scores for efficient range queries.
+        Results are ordered by timestamp ascending.
+
+        :param start_time: Start of time range
+        :param end_time: End of time range
+        :param batch_size: Number of history entries per batch
+        :return: Iterator yielding batches of InvocationHistory objects
+        """
+        start_score = start_time.timestamp()
+        end_score = end_time.timestamp()
+        offset = 0
+
+        while True:
+            # Get members in score range with pagination, ordered by score (timestamp)
+            members = self.client.zrangebyscore(
+                self.key.history_by_timestamp(),
+                min=start_score,
+                max=end_score,
+                start=offset,
+                num=batch_size,
+            )
+
+            if not members:
+                break
+
+            # Extract history JSON from members
+            # Member format: "invocation_id:timestamp:history_json"
+            batch: list[InvocationHistory] = []
+            for member in members:
+                member_str = member.decode() if isinstance(member, bytes) else member
+                # Split only on first two colons to get the history_json part
+                parts = member_str.split(":", 2)
+                if len(parts) >= 3:
+                    history_json = parts[2]
+                    batch.append(InvocationHistory.from_json(history_json))
+
+            if batch:
+                yield batch
+
+            offset += batch_size

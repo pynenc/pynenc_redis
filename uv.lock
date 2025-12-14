@@ -917,7 +917,7 @@ wheels = [
 
 [[package]]
 name = "pynenc"
-version = "0.1.0rc101.dev126"
+version = "0.1.0rc101.dev134"
 source = { registry = "https://test.pypi.org/simple/" }
 dependencies = [
     { name = "cistell" },
@@ -926,9 +926,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://test-files.pythonhosted.org/packages/77/8e/dffa739bb57e9d01b57e5245e5badb6e91afa46f6dbd67f8de48e875d994/pynenc-0.1.0rc101.dev126.tar.gz", hash = "sha256:4d3a1713c6eaba42dbe175a6e00453fd878659790148f5167cc6808e5d395143", size = 1644955, upload-time = "2025-11-22T20:30:31.036Z" }
+sdist = { url = "https://test-files.pythonhosted.org/packages/33/80/22795a68f607ed7ae6ca0e1b9b905c850078469bd65d22bb7037ad399286/pynenc-0.1.0rc101.dev134.tar.gz", hash = "sha256:15664db4bc3b536effc4fe7203d22b3f62c8d74b96066f858b0c4c631049fbe9", size = 1701132, upload-time = "2025-12-14T12:17:37.274Z" }
 wheels = [
-    { url = "https://test-files.pythonhosted.org/packages/d5/cd/9926d463e838e1661ef7d8874b690f5d99528cbffbb7e050378046eadd13/pynenc-0.1.0rc101.dev126-py3-none-any.whl", hash = "sha256:0cb6d409f830a7793b14bdbfedc927c5052ac7317b75d8fddaf3511bf2b02b0a", size = 485361, upload-time = "2025-11-22T20:30:29.044Z" },
+    { url = "https://test-files.pythonhosted.org/packages/d7/5a/2f0315174d5f28c0549e6bdc480f4c923163b6d77edc2480a10c5589ca7c/pynenc-0.1.0rc101.dev134-py3-none-any.whl", hash = "sha256:398b8881bcd57e73b8b1419b955fc27bcbe646290b209fd70bbdc3ad2e6e3cd4", size = 565539, upload-time = "2025-12-14T12:17:38.698Z" },
 ]
 
 [package.optional-dependencies]
@@ -994,7 +994,7 @@ tests = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pynenc", specifier = ">=0.1.0rc101.dev125", index = "https://test.pypi.org/simple/" },
+    { name = "pynenc", specifier = ">=0.1.0rc101.dev134", index = "https://test.pypi.org/simple/" },
     { name = "redis", specifier = ">=4.6.0" },
 ]
 
