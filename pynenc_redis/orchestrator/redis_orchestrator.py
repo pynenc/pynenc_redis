@@ -403,6 +403,108 @@ class RedisOrchestrator(BaseOrchestrator):
         for inv_id in self.client.smembers(self.key.task(task_id)):
             yield inv_id.decode() if isinstance(inv_id, bytes) else inv_id
 
+    def get_invocation_ids_paginated(
+        self,
+        task_id: str | None = None,
+        statuses: list["InvocationStatus"] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[str]:
+        """
+        Retrieves invocation IDs with pagination support.
+
+        Uses Redis sorted sets indexed by registration time for efficient pagination.
+        Results are ordered by registration time (newest first).
+
+        :param task_id: Optional task ID to filter by.
+        :param statuses: Optional statuses to filter by.
+        :param limit: Maximum number of results to return.
+        :param offset: Number of results to skip.
+        :return: List of matching invocation IDs.
+        """
+        # Determine which sorted set to use based on task_id filter
+        if task_id:
+            source_key = self.key.task_invocations_by_time(task_id)
+        else:
+            source_key = self.key.all_invocations_by_time()
+
+        # If no status filter, use direct range query (newest first = reverse order)
+        if not statuses:
+            raw_ids = self.client.zrevrange(source_key, offset, offset + limit - 1)
+            return [
+                inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+                for inv_id in raw_ids
+            ]
+
+        # With status filter, need to intersect with status sets
+        status_keys = [self.key.status_to_invocations(status) for status in statuses]
+
+        # Get all invocation IDs from status sets
+        status_inv_ids: set[str] = set()
+        for status_key in status_keys:
+            for inv_id in self.client.smembers(status_key):
+                decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+                status_inv_ids.add(decoded_id)
+
+        if not status_inv_ids:
+            return []
+
+        # Get invocations from time-sorted set with their scores for ordering
+        # Using zrevrange with scores to get all, then filter and paginate
+        all_with_scores = self.client.zrevrange(source_key, 0, -1, withscores=True)
+
+        # Filter by status and collect in order
+        filtered_ids = []
+        for inv_id, _score in all_with_scores:
+            decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+            if decoded_id in status_inv_ids:
+                filtered_ids.append(decoded_id)
+
+        # Apply pagination
+        return filtered_ids[offset : offset + limit]
+
+    def count_invocations(
+        self,
+        task_id: str | None = None,
+        statuses: list["InvocationStatus"] | None = None,
+    ) -> int:
+        """
+        Counts invocations matching the given filters.
+
+        :param task_id: Optional task ID to filter by.
+        :param statuses: Optional statuses to filter by.
+        :return: The total count of matching invocations.
+        """
+        # Determine source based on task_id filter
+        if task_id:
+            source_key = self.key.task_invocations_by_time(task_id)
+        else:
+            source_key = self.key.all_invocations_by_time()
+
+        # If no status filter, return count from sorted set
+        if not statuses:
+            return self.client.zcard(source_key)
+
+        # With status filter, need to count intersection
+        # Get all invocation IDs from the source
+        source_inv_ids: set[str] = {
+            inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+            for inv_id in self.client.zrange(source_key, 0, -1)
+        }
+
+        if not source_inv_ids:
+            return 0
+
+        # Get all invocation IDs matching any of the statuses
+        status_inv_ids: set[str] = set()
+        for status in statuses:
+            for inv_id in self.client.smembers(self.key.status_to_invocations(status)):
+                decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+                status_inv_ids.add(decoded_id)
+
+        # Return count of intersection
+        return len(source_inv_ids & status_inv_ids)
+
     def get_call_invocation_ids(self, call_id: str) -> Iterator[str]:
         """
         Retrieves all invocation IDs associated with a specific call ID.
@@ -480,6 +582,17 @@ class RedisOrchestrator(BaseOrchestrator):
 
             # Initialize retry count to 0
             self.client.set(self.key.invocation_retries(invocation.invocation_id), 0)
+
+            # Add to time-indexed sorted sets for pagination support
+            registration_time = time()
+            self.client.zadd(
+                self.key.all_invocations_by_time(),
+                {invocation.invocation_id: registration_time},
+            )
+            self.client.zadd(
+                self.key.task_invocations_by_time(invocation.task.task_id),
+                {invocation.invocation_id: registration_time},
+            )
         return status_record
 
     def _set_status_record(

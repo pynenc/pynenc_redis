@@ -130,6 +130,14 @@ class Key:
     def invocation_auto_purge(self) -> str:
         return f"{self.prefix}invocation_auto_purge"
 
+    def all_invocations_by_time(self) -> str:
+        """Get key for sorted set of all invocation IDs indexed by registration time."""
+        return f"{self.prefix}all_invocations_by_time"
+
+    def task_invocations_by_time(self, task_id: str) -> str:
+        """Get key for sorted set of invocation IDs for a task indexed by registration time."""
+        return f"{self.prefix}task_invocations_by_time:{task_id}"
+
     def default_queue(self) -> str:
         return f"{self.prefix}default_queue"
 
