@@ -1,1 +1,1 @@
-from pynenc_tests.unit.broker.test_broker_all_instances import *
+from pynenc_tests.unit.broker.all_tests import *

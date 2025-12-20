@@ -1,1 +1,1 @@
-from pynenc_tests.integration.broker.test_subclasses_routing import *
+from pynenc_tests.integration.broker.all_tests import *

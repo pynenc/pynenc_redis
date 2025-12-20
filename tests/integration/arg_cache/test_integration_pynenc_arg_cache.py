@@ -1,1 +1,1 @@
-from pynenc_tests.integration.test_arg_cache.test_all_arg_cache import *
+from pynenc_tests.integration.test_arg_cache.all_tests import *

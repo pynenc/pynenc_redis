@@ -1,1 +1,1 @@
-from pynenc_tests.unit.trigger.test_trigger_all_instances import *
+from pynenc_tests.unit.trigger.all_tests import *

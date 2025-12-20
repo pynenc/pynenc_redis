@@ -818,18 +818,13 @@ class RedisOrchestrator(BaseOrchestrator):
             },
         )
 
-    def get_active_runners(self) -> list[ActiveRunnerInfo]:
-        """Retrieve all active runners with heartbeat information."""
-        from pynenc.runner.runner_context import RunnerContext
+    def _get_runner_heartbeat_data(self) -> list[tuple[str, dict[bytes, bytes]]]:
+        """
+        Fetch all runner IDs with their heartbeat hash data.
 
-        timeout_seconds = self.conf.runner_heartbeat_timeout_minutes * 60
-        current_time = time()
-        cutoff_time = current_time - timeout_seconds
-
-        # Get all runner IDs ordered by creation time (sorted set score)
+        :return: List of (runner_id, hash_data) tuples for all registered runners.
+        """
         all_runner_ids = self.client.zrange(self.key.runner_heartbeats(), 0, -1)
-
-        # Use pipeline to fetch all runner data at once
         if not all_runner_ids:
             return []
 
@@ -838,34 +833,59 @@ class RedisOrchestrator(BaseOrchestrator):
             runner_id = runner_id_bytes.decode()
             pipeline.hgetall(self.key.runner_heartbeat(runner_id))
 
-        runner_data_list = pipeline.execute()
+        return [
+            (runner_id_bytes.decode(), data)
+            for runner_id_bytes, data in zip(
+                all_runner_ids, pipeline.execute(), strict=True
+            )
+        ]
 
+    def _get_heartbeat_cutoff_time(self) -> float:
+        """Calculate the cutoff timestamp for active runners."""
+        timeout_seconds = self.conf.runner_heartbeat_timeout_minutes * 60
+        return time() - timeout_seconds
+
+    def _is_runner_active(self, runner_data: dict[bytes, bytes], cutoff: float) -> bool:
+        """Check if a runner is active based on its last heartbeat."""
+        if not runner_data or b"last_heartbeat" not in runner_data:
+            return False
+        try:
+            return float(runner_data[b"last_heartbeat"].decode()) >= cutoff
+        except (ValueError, TypeError):
+            return False
+
+    def get_active_runners(self) -> list[ActiveRunnerInfo]:
+        """Retrieve all active runners with heartbeat information."""
+        from pynenc.runner.runner_context import RunnerContext
+
+        cutoff_time = self._get_heartbeat_cutoff_time()
         active_runners = []
-        for runner_data in runner_data_list:
-            if not runner_data:
+
+        for _runner_id, runner_data in self._get_runner_heartbeat_data():
+            if not self._is_runner_active(runner_data, cutoff_time):
                 continue
 
             try:
                 last_heartbeat = float(runner_data[b"last_heartbeat"].decode())
-                # Filter by heartbeat timeout
-                if last_heartbeat < cutoff_time:
-                    continue
-
                 runner_ctx = RunnerContext.from_json(
                     runner_data[b"runner_context_json"].decode()
                 )
 
                 # Optional service execution timestamps
-                last_service_start = None
-                last_service_end = None
-                if b"last_service_start" in runner_data:
-                    last_service_start = datetime.fromtimestamp(
+                last_service_start = (
+                    datetime.fromtimestamp(
                         float(runner_data[b"last_service_start"].decode()), tz=UTC
                     )
-                if b"last_service_end" in runner_data:
-                    last_service_end = datetime.fromtimestamp(
+                    if b"last_service_start" in runner_data
+                    else None
+                )
+                last_service_end = (
+                    datetime.fromtimestamp(
                         float(runner_data[b"last_service_end"].decode()), tz=UTC
                     )
+                    if b"last_service_end" in runner_data
+                    else None
+                )
 
                 active_runners.append(
                     ActiveRunnerInfo(
@@ -879,50 +899,20 @@ class RedisOrchestrator(BaseOrchestrator):
                     )
                 )
             except (ValueError, KeyError):
-                # Skip invalid runner contexts
                 continue
 
         return active_runners
 
     def cleanup_inactive_runners(self) -> None:
         """Remove runners that haven't sent a heartbeat within the timeout period."""
-        timeout_seconds = self.conf.runner_heartbeat_timeout_minutes * 60
-        current_time = time()
-        cutoff_time = current_time - timeout_seconds
+        cutoff_time = self._get_heartbeat_cutoff_time()
 
-        # Get all runner IDs from sorted set
-        all_runner_ids = self.client.zrange(self.key.runner_heartbeats(), 0, -1)
+        inactive_runner_ids = [
+            runner_id
+            for runner_id, data in self._get_runner_heartbeat_data()
+            if not self._is_runner_active(data, cutoff_time)
+        ]
 
-        if not all_runner_ids:
-            return
-
-        # Use pipeline to fetch heartbeat times
-        pipeline = self.client.pipeline(transaction=False)
-        for runner_id_bytes in all_runner_ids:
-            runner_id = runner_id_bytes.decode()
-            pipeline.hget(self.key.runner_heartbeat(runner_id), "last_heartbeat")
-
-        heartbeat_times = pipeline.execute()
-
-        # Identify inactive runners
-        inactive_runner_ids = []
-        for runner_id_bytes, heartbeat_bytes in zip(
-            all_runner_ids, heartbeat_times, strict=False
-        ):
-            if not heartbeat_bytes:
-                # Runner data missing, consider inactive
-                inactive_runner_ids.append(runner_id_bytes.decode())
-                continue
-
-            try:
-                last_heartbeat = float(heartbeat_bytes.decode())
-                if last_heartbeat < cutoff_time:
-                    inactive_runner_ids.append(runner_id_bytes.decode())
-            except ValueError:
-                # Invalid heartbeat data, consider inactive
-                inactive_runner_ids.append(runner_id_bytes.decode())
-
-        # Clean up inactive runners in a single pipeline
         if inactive_runner_ids:
             pipeline = self.client.pipeline(transaction=True)
             for runner_id in inactive_runner_ids:
@@ -949,6 +939,40 @@ class RedisOrchestrator(BaseOrchestrator):
                     yield invocation_id
             except KeyError:
                 # Invocation no longer exists
+                continue
+
+    def get_running_invocations_for_recovery(self) -> Iterator[str]:
+        """
+        Retrieve invocation IDs in RUNNING status owned by inactive runners.
+
+        An inactive runner is one that hasn't sent a heartbeat within the
+        configured timeout period. Invocations owned by such runners are
+        considered stuck and need recovery.
+
+        :return: Iterator of invocation IDs that need recovery.
+        """
+        cutoff_time = self._get_heartbeat_cutoff_time()
+
+        # Build set of active runner IDs
+        active_runner_ids = {
+            runner_id
+            for runner_id, data in self._get_runner_heartbeat_data()
+            if self._is_runner_active(data, cutoff_time)
+        }
+
+        # Check RUNNING invocations for orphaned owners
+        for inv_id_bytes in self.client.smembers(
+            self.key.status_to_invocations(InvocationStatus.RUNNING)
+        ):
+            invocation_id = inv_id_bytes.decode()
+            try:
+                status_record = self.get_invocation_status_record(invocation_id)
+                if (
+                    status_record.owner_id
+                    and status_record.owner_id not in active_runner_ids
+                ):
+                    yield invocation_id
+            except KeyError:
                 continue
 
     def purge(self) -> None:
