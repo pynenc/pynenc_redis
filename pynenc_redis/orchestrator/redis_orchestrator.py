@@ -771,8 +771,15 @@ class RedisOrchestrator(BaseOrchestrator):
                 filtered.append(inv_id)
         return filtered
 
-    def register_runner_heartbeat(self, runner_ctx: "RunnerContext") -> None:
-        """Register or update a runner's heartbeat timestamp."""
+    def register_runner_heartbeat(
+        self, runner_ctx: "RunnerContext", can_run_atomic_service: bool = False
+    ) -> None:
+        """
+        Register or update a runner's heartbeat timestamp and atomic service eligibility.
+
+        :param runner_ctx: The runner context
+        :param can_run_atomic_service: Whether runner is eligible for atomic service
+        """
         current_time = time()
         runner_id = runner_ctx.runner_id
         runner_json = runner_ctx.to_json()
@@ -792,6 +799,7 @@ class RedisOrchestrator(BaseOrchestrator):
             mapping={
                 "runner_context_json": runner_json,
                 "last_heartbeat": current_time,
+                "can_run_atomic_service": int(can_run_atomic_service),
             },
         )
 
@@ -854,8 +862,15 @@ class RedisOrchestrator(BaseOrchestrator):
         except (ValueError, TypeError):
             return False
 
-    def get_active_runners(self) -> list[ActiveRunnerInfo]:
-        """Retrieve all active runners with heartbeat information."""
+    def get_active_runners(
+        self, can_run_atomic_service: bool | None = None
+    ) -> list[ActiveRunnerInfo]:
+        """
+        Retrieve all active runners with heartbeat information, optionally filtered by atomic service eligibility.
+
+        :param can_run_atomic_service: If True, only runners eligible for atomic service. If False, only not eligible. If None, all active runners.
+        :return: List of ActiveRunnerInfo objects.
+        """
         from pynenc.runner.runner_context import RunnerContext
 
         cutoff_time = self._get_heartbeat_cutoff_time()
@@ -863,6 +878,12 @@ class RedisOrchestrator(BaseOrchestrator):
 
         for _runner_id, runner_data in self._get_runner_heartbeat_data():
             if not self._is_runner_active(runner_data, cutoff_time):
+                continue
+            can_run_atomic = bool(int(runner_data[b"can_run_atomic_service"].decode()))
+            if (
+                can_run_atomic_service is not None
+                and can_run_atomic != can_run_atomic_service
+            ):
                 continue
 
             try:
@@ -893,6 +914,7 @@ class RedisOrchestrator(BaseOrchestrator):
                         creation_time=datetime.fromtimestamp(
                             float(runner_data[b"creation_timestamp"].decode()), tz=UTC
                         ),
+                        allow_to_run_atomic_service=can_run_atomic,
                         last_heartbeat=datetime.fromtimestamp(last_heartbeat, tz=UTC),
                         last_service_start=last_service_start,
                         last_service_end=last_service_end,
