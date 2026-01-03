@@ -848,11 +848,6 @@ class RedisOrchestrator(BaseOrchestrator):
             )
         ]
 
-    def _get_heartbeat_cutoff_time(self) -> float:
-        """Calculate the cutoff timestamp for active runners."""
-        timeout_seconds = self.conf.runner_heartbeat_timeout_minutes * 60
-        return time() - timeout_seconds
-
     def _is_runner_active(self, runner_data: dict[bytes, bytes], cutoff: float) -> bool:
         """Check if a runner is active based on its last heartbeat."""
         if not runner_data or b"last_heartbeat" not in runner_data:
@@ -862,18 +857,24 @@ class RedisOrchestrator(BaseOrchestrator):
         except (ValueError, TypeError):
             return False
 
-    def get_active_runners(
-        self, can_run_atomic_service: bool | None = None
-    ) -> list[ActiveRunnerInfo]:
+    def _get_active_runners(
+        self, timeout_seconds: float, can_run_atomic_service: bool | None
+    ) -> list["ActiveRunnerInfo"]:
         """
-        Retrieve all active runners with heartbeat information, optionally filtered by atomic service eligibility.
+        Retrieve runners that are considered active based on heartbeat activity.
 
-        :param can_run_atomic_service: If True, only runners eligible for atomic service. If False, only not eligible. If None, all active runners.
-        :return: List of ActiveRunnerInfo objects.
+        A runner is considered "active" if it has sent a heartbeat within the timeout period.
+        This is used for atomic service scheduling to determine which runners are eligible
+        to participate in time slot distribution.
+
+        :param float timeout_seconds: Heartbeat timeout in seconds (typically from atomic_service_runner_considered_dead_after_minutes config)
+        :param bool | None can_run_atomic_service: If specified, filters runners based on their eligibility to run atomic services
+        :return: List of active runners ordered by creation time (oldest first)
+        :rtype: list["ActiveRunnerInfo"]
         """
         from pynenc.runner.runner_context import RunnerContext
 
-        cutoff_time = self._get_heartbeat_cutoff_time()
+        cutoff_time = time() - timeout_seconds
         active_runners = []
 
         for _runner_id, runner_data in self._get_runner_heartbeat_data():
@@ -925,9 +926,16 @@ class RedisOrchestrator(BaseOrchestrator):
 
         return active_runners
 
-    def cleanup_inactive_runners(self) -> None:
-        """Remove runners that haven't sent a heartbeat within the timeout period."""
-        cutoff_time = self._get_heartbeat_cutoff_time()
+    def _cleanup_inactive_runners(self, timeout_seconds: float) -> None:
+        """
+        Remove runners that haven't sent a heartbeat within the timeout period.
+
+        This is part of invocation recovery: runners inactive for longer than timeout_seconds
+        are considered dead, and their RUNNING invocations will be recovered.
+
+        :param float timeout_seconds: Heartbeat timeout in seconds (typically from atomic_service_runner_considered_dead_after_minutes config)
+        """
+        cutoff_time = time() - timeout_seconds
 
         inactive_runner_ids = [
             runner_id
@@ -963,7 +971,9 @@ class RedisOrchestrator(BaseOrchestrator):
                 # Invocation no longer exists
                 continue
 
-    def get_running_invocations_for_recovery(self) -> Iterator[str]:
+    def _get_running_invocations_for_recovery(
+        self, timeout_seconds: float
+    ) -> Iterator[str]:
         """
         Retrieve invocation IDs in RUNNING status owned by inactive runners.
 
@@ -971,9 +981,11 @@ class RedisOrchestrator(BaseOrchestrator):
         configured timeout period. Invocations owned by such runners are
         considered stuck and need recovery.
 
+        :param float timeout_seconds: Heartbeat timeout in seconds
         :return: Iterator of invocation IDs that need recovery.
+        :rtype: Iterator[str]
         """
-        cutoff_time = self._get_heartbeat_cutoff_time()
+        cutoff_time = time() - timeout_seconds
 
         # Build set of active runner IDs
         active_runner_ids = {
