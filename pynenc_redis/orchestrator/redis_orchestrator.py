@@ -32,7 +32,6 @@ from pynenc_redis.util.redis_keys import Key
 
 if TYPE_CHECKING:
     from pynenc.app import Pynenc
-    from pynenc.runner.runner_context import RunnerContext
     from pynenc.task import Task
 
 
@@ -544,7 +543,7 @@ class RedisOrchestrator(BaseOrchestrator):
     def _register_new_invocations(
         self,
         invocations: list["DistributedInvocation[Params, Result]"],
-        owner_id: str | None = None,
+        runner_id: str | None = None,
     ) -> InvocationStatusRecord:
         """
         Register new invocations with status REGISTERED if they don't exist yet.
@@ -552,7 +551,7 @@ class RedisOrchestrator(BaseOrchestrator):
         Initializes the necessary Redis data structures for task-to-invocation,
         call-to-invocation mappings, status, and retry tracking.
         """
-        status_record = InvocationStatusRecord(InvocationStatus.REGISTERED, owner_id)
+        status_record = InvocationStatusRecord(InvocationStatus.REGISTERED, runner_id)
         for invocation in invocations:
             # Skip if already registered
             if self.client.exists(
@@ -610,7 +609,7 @@ class RedisOrchestrator(BaseOrchestrator):
         pipeline.execute()
 
     def _atomic_status_transition(
-        self, invocation_id: str, status: InvocationStatus, owner_id: str | None = None
+        self, invocation_id: str, status: InvocationStatus, runner_id: str | None = None
     ) -> InvocationStatusRecord:
         """
         Perform atomic status transition with validation.
@@ -621,7 +620,7 @@ class RedisOrchestrator(BaseOrchestrator):
         current_record = self.get_invocation_status_record(invocation_id)
 
         # Validate and compute new record
-        new_record = status_record_transition(current_record, status, owner_id)
+        new_record = status_record_transition(current_record, status, runner_id)
 
         # Use Redis transaction for atomic update
         pipeline = self.client.pipeline(transaction=True)
@@ -771,51 +770,53 @@ class RedisOrchestrator(BaseOrchestrator):
                 filtered.append(inv_id)
         return filtered
 
-    def register_runner_heartbeat(
-        self, runner_ctx: "RunnerContext", can_run_atomic_service: bool = False
+    def register_runner_heartbeats(
+        self, runner_ids: list[str], can_run_atomic_service: bool = False
     ) -> None:
         """
-        Register or update a runner's heartbeat timestamp and atomic service eligibility.
+        Register or update runners' heartbeat timestamp and atomic service eligibility.
 
-        :param runner_ctx: The runner context
-        :param can_run_atomic_service: Whether runner is eligible for atomic service
+        :param runner_ids: List of runner IDs
+        :param can_run_atomic_service: Whether runners are eligible for atomic service
         """
         current_time = time()
-        runner_id = runner_ctx.runner_id
-        runner_json = runner_ctx.to_json()
-        runner_key = self.key.runner_heartbeat(runner_id)
-
         pipeline = self.client.pipeline(transaction=True)
 
-        # Add to sorted set only if doesn't exist (NX flag preserves creation order)
-        pipeline.zadd(self.key.runner_heartbeats(), {runner_id: current_time}, nx=True)
+        for runner_id in runner_ids:
+            runner_key = self.key.runner_heartbeat(runner_id)
 
-        # Always update the hash - use HSET with multiple fields
-        # If key doesn't exist, this creates it with all fields
-        # If key exists, this only updates the fields we specify
-        pipeline.hsetnx(runner_key, "creation_timestamp", current_time)
-        pipeline.hset(
-            runner_key,
-            mapping={
-                "runner_context_json": runner_json,
-                "last_heartbeat": current_time,
-                "can_run_atomic_service": int(can_run_atomic_service),
-            },
-        )
+            # Add to sorted set only if doesn't exist (NX flag preserves creation order)
+            pipeline.zadd(
+                self.key.runner_heartbeats(), {runner_id: current_time}, nx=True
+            )
+
+            # Always update the hash - use HSET with multiple fields
+            # If key doesn't exist, this creates it with all fields
+            # If key exists, this only updates the fields we specify
+            pipeline.hsetnx(runner_key, "creation_timestamp", current_time)
+            pipeline.hset(
+                runner_key,
+                mapping={
+                    "last_heartbeat": current_time,
+                    "can_run_atomic_service": int(can_run_atomic_service),
+                },
+            )
 
         pipeline.execute()
 
     def record_atomic_service_execution(
-        self, runner_ctx: "RunnerContext", start_time: datetime, end_time: datetime
+        self, runner_id: str, start_time: datetime, end_time: datetime
     ) -> None:
         """
         Record the latest atomic service execution window for a runner.
 
-        :param runner_ctx: The runner context
-        :param start_time: Service execution start timestamp
-        :param end_time: Service execution end timestamp
+        Replaces any previous execution record for this runner with the current one.
+        Used for diagnostics and detecting potential collisions.
+
+        :param str runner_id: The runner that executed the service
+        :param datetime start_time: When execution started (UTC timezone-aware)
+        :param datetime end_time: When execution ended (UTC timezone-aware)
         """
-        runner_id = runner_ctx.runner_id
         runner_key = self.key.runner_heartbeat(runner_id)
 
         self.client.hset(
@@ -872,12 +873,10 @@ class RedisOrchestrator(BaseOrchestrator):
         :return: List of active runners ordered by creation time (oldest first)
         :rtype: list["ActiveRunnerInfo"]
         """
-        from pynenc.runner.runner_context import RunnerContext
-
         cutoff_time = time() - timeout_seconds
         active_runners = []
 
-        for _runner_id, runner_data in self._get_runner_heartbeat_data():
+        for runner_id, runner_data in self._get_runner_heartbeat_data():
             if not self._is_runner_active(runner_data, cutoff_time):
                 continue
             can_run_atomic = bool(int(runner_data[b"can_run_atomic_service"].decode()))
@@ -889,9 +888,6 @@ class RedisOrchestrator(BaseOrchestrator):
 
             try:
                 last_heartbeat = float(runner_data[b"last_heartbeat"].decode())
-                runner_ctx = RunnerContext.from_json(
-                    runner_data[b"runner_context_json"].decode()
-                )
 
                 # Optional service execution timestamps
                 last_service_start = (
@@ -911,7 +907,7 @@ class RedisOrchestrator(BaseOrchestrator):
 
                 active_runners.append(
                     ActiveRunnerInfo(
-                        runner_ctx=runner_ctx,
+                        runner_id=runner_id,
                         creation_time=datetime.fromtimestamp(
                             float(runner_data[b"creation_timestamp"].decode()), tz=UTC
                         ),
@@ -925,30 +921,6 @@ class RedisOrchestrator(BaseOrchestrator):
                 continue
 
         return active_runners
-
-    def _cleanup_inactive_runners(self, timeout_seconds: float) -> None:
-        """
-        Remove runners that haven't sent a heartbeat within the timeout period.
-
-        This is part of invocation recovery: runners inactive for longer than timeout_seconds
-        are considered dead, and their RUNNING invocations will be recovered.
-
-        :param float timeout_seconds: Heartbeat timeout in seconds (typically from atomic_service_runner_considered_dead_after_minutes config)
-        """
-        cutoff_time = time() - timeout_seconds
-
-        inactive_runner_ids = [
-            runner_id
-            for runner_id, data in self._get_runner_heartbeat_data()
-            if not self._is_runner_active(data, cutoff_time)
-        ]
-
-        if inactive_runner_ids:
-            pipeline = self.client.pipeline(transaction=True)
-            for runner_id in inactive_runner_ids:
-                pipeline.delete(self.key.runner_heartbeat(runner_id))
-                pipeline.zrem(self.key.runner_heartbeats(), runner_id)
-            pipeline.execute()
 
     def get_pending_invocations_for_recovery(self) -> Iterator[str]:
         """Retrieve invocation IDs stuck in PENDING status beyond the allowed time."""
@@ -1002,8 +974,8 @@ class RedisOrchestrator(BaseOrchestrator):
             try:
                 status_record = self.get_invocation_status_record(invocation_id)
                 if (
-                    status_record.owner_id
-                    and status_record.owner_id not in active_runner_ids
+                    status_record.runner_id
+                    and status_record.runner_id not in active_runner_ids
                 ):
                     yield invocation_id
             except KeyError:

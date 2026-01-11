@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import redis
 from pynenc.exceptions import InvocationNotFoundError
 from pynenc.invocation.dist_invocation import DistributedInvocation
+from pynenc.runner.runner_context import RunnerContext
 from pynenc.state_backend.base_state_backend import BaseStateBackend, InvocationHistory
 from pynenc.workflow import WorkflowIdentity
 
@@ -427,3 +428,54 @@ class RedisStateBackend(BaseStateBackend):
                 yield batch
 
             offset += batch_size
+
+    def _store_runner_context(self, runner_context: "RunnerContext") -> None:
+        """
+        Store a runner context in Redis.
+
+        :param RunnerContext runner_context: The context to store
+        """
+        runner_context_key = self.key.runner_context(runner_context.runner_id)
+        self.client.set(runner_context_key, runner_context.to_json())
+
+    def _get_runner_context(self, runner_id: str) -> "RunnerContext | None":
+        """
+        Retrieve a runner context by runner_id from Redis.
+
+        :param str runner_id: The runner's unique identifier
+        :return: The stored RunnerContext or None if not found
+        """
+        from pynenc.runner.runner_context import RunnerContext
+
+        runner_context_key = self.key.runner_context(runner_id)
+        ctx_data = self.client.get(runner_context_key)
+
+        if ctx_data:
+            return RunnerContext.from_json(ctx_data.decode())
+        return None
+
+    def _get_runner_contexts(self, runner_ids: list[str]) -> list["RunnerContext"]:
+        """
+        Retrieve multiple runner contexts by their IDs using Redis mget.
+
+        :param list[str] runner_ids: List of runner unique identifiers
+        :return: list["RunnerContext"] of the stored RunnerContexts
+        """
+        from pynenc.runner.runner_context import RunnerContext
+
+        if not runner_ids:
+            return []
+
+        # Build list of keys for mget
+        runner_context_keys = [self.key.runner_context(rid) for rid in runner_ids]
+
+        # Use mget to retrieve all contexts in one round-trip
+        ctx_data_list = self.client.mget(runner_context_keys)
+
+        # Parse and return non-None results
+        contexts = []
+        for ctx_data in ctx_data_list:
+            if ctx_data:
+                contexts.append(RunnerContext.from_json(ctx_data.decode()))
+
+        return contexts

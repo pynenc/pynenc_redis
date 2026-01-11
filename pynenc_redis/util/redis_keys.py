@@ -271,6 +271,15 @@ class Key:
         """
         return f"{self.prefix}workflow:{workflow_id}:det:{key}"
 
+    def runner_context(self, runner_id: str) -> str:
+        """
+        Get key for storing a runner context.
+
+        :param runner_id: The runner's unique identifier
+        :return: Redis key for the runner context
+        """
+        return f"{self.prefix}runner_context:{runner_id}"
+
     def workflow_sub_invocations(self, workflow_id: str) -> str:
         """
         Get key for storing sub-invocation IDs that run inside a workflow.
