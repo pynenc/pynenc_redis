@@ -8,7 +8,6 @@ from time import time
 from typing import TYPE_CHECKING
 
 import redis
-from pynenc.call import Call
 from pynenc.exceptions import (
     CycleDetectedError,
 )
@@ -81,11 +80,9 @@ class RedisCycleControl(BaseCycleControl):
     ) -> None:
         """Adds a new call relationship between invocations and checks for potential cycles."""
         if caller.call_id == callee.call_id:
-            raise CycleDetectedError.from_cycle([caller.call])
+            raise CycleDetectedError.from_cycle([caller.call_id])
         if cycle := self.find_cycle_caused_by_new_invocation(caller, callee):
             raise CycleDetectedError.from_cycle(cycle)
-        self.client.set(self.key.call(caller.call_id), caller.call.to_json())
-        self.client.set(self.key.call(callee.call_id), callee.call.to_json())
         self.client.sadd(self.key.edge(caller.call_id), callee.call_id)
         self.client.sadd(self.key.reverse_edge(callee.call_id), caller.call_id)
 
@@ -98,11 +95,6 @@ class RedisCycleControl(BaseCycleControl):
         """
         for callee_call_id in self.client.smembers(self.key.edge(caller_call_id)):
             yield callee_call_id.decode()
-
-    def _get_all_call_ids(self) -> Iterator[str]:
-        """Returns an iterator of all call_ids in the graph."""
-        for key in self.client.scan_iter(match=self.key.call("*")):
-            yield key.decode().split(":")[-1]
 
     def _get_all_edges(self) -> Iterator[tuple[str, str]]:
         """Returns an iterator of all edges in the graph as (caller_call_id, callee_call_id) tuples."""
@@ -147,17 +139,16 @@ class RedisCycleControl(BaseCycleControl):
         """
         call_id = self.app.orchestrator.get_invocation_call_id(invocation_id)
         if not self.app.orchestrator.any_non_final_invocations(call_id):
-            self.client.delete(self.key.call(call_id))
             self.remove_edges(call_id)
 
     def find_cycle_caused_by_new_invocation(
         self, caller: "DistributedInvocation", callee: "DistributedInvocation"
-    ) -> list["Call"]:
+    ) -> list[str]:
         """
         Checks if adding a new call from `caller` to `callee` would create a cycle.
         :param DistributedInvocation caller: The invocation making the call.
         :param DistributedInvocation callee: The invocation being called.
-        :return: List of `Call` objects forming the cycle, if a cycle is detected; otherwise, an empty list.
+        :return: List of call_ids forming the cycle, if a cycle is detected; otherwise, an empty list.
         """
         # Temporarily add the edge to check if it would cause a cycle
         self.client.sadd(self.key.edge(caller.call_id), callee.call_id)
@@ -180,18 +171,17 @@ class RedisCycleControl(BaseCycleControl):
         current_call_id: str,
         visited: set[str],
         path: list[str],
-    ) -> list["Call"]:
+    ) -> list[str]:
         """
         A utility function for cycle detection.
         :param str current_call_id: The current call ID being examined.
         :param set[str] visited: A set of visited call IDs for cycle detection.
         :param list[str] path: A list representing the current path of call IDs.
-        :return: List of `Call` objects forming a cycle, if a cycle is detected; otherwise, an empty list.
+        :return: List of call_ids forming a cycle, if a cycle is detected; otherwise, an empty list.
         """
         visited.add(current_call_id)
         path.append(current_call_id)
 
-        call_cycle = []
         for _neighbour_call_id in self.client.smembers(self.key.edge(current_call_id)):
             neighbour_call_id = _neighbour_call_id.decode()
             if neighbour_call_id not in visited:
@@ -200,11 +190,9 @@ class RedisCycleControl(BaseCycleControl):
                     return cycle
             elif neighbour_call_id in path:
                 cycle_start_index = path.index(neighbour_call_id)
-                for _id in path[cycle_start_index:]:
-                    if call_json := self.client.get(self.key.call(_id)):
-                        call_cycle.append(Call.from_json(self.app, call_json.decode()))
+                return path[cycle_start_index:]
         path.pop()
-        return call_cycle
+        return []
 
 
 class RedisBlockingControl(BaseBlockingControl):
