@@ -5,15 +5,17 @@ This module provides a distributed trigger system implementation using Redis
 for persistence and coordination across multiple application instances.
 """
 
+import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import redis
+from pynenc.identifiers.task_id import TaskId
+from pynenc.models.trigger_definition_dto import TriggerDefinitionDTO
 from pynenc.trigger.base_trigger import BaseTrigger
-from pynenc.trigger.conditions import TriggerCondition, ValidCondition
-from pynenc.trigger.trigger_definitions import TriggerDefinition
+from pynenc.trigger.conditions import CompositeLogic, TriggerCondition, ValidCondition
 from pynenc.trigger.types import ConditionId
 
 from pynenc_redis.conf.config_trigger import ConfigTriggerRedis
@@ -23,6 +25,17 @@ from pynenc_redis.util.redis_keys import Key
 if TYPE_CHECKING:
     from pynenc.app import Pynenc
     from pynenc.trigger.conditions import ConditionContext
+
+
+def _trigger_definition_dto_from_json(data: dict) -> TriggerDefinitionDTO:
+    """Reconstruct TriggerDefinitionDTO from JSON data."""
+    return TriggerDefinitionDTO(
+        trigger_id=data["trigger_id"],
+        task_id=TaskId.from_key(data["task_id_key"]),
+        condition_ids=data["condition_ids"],
+        logic=CompositeLogic(data["logic_value"]),
+        argument_provider_json=data.get("argument_provider_json"),
+    )
 
 
 class RedisTrigger(BaseTrigger):
@@ -92,15 +105,22 @@ class RedisTrigger(BaseTrigger):
             return TriggerCondition.from_json(condition_data.decode(), self.app)
         return None
 
-    def register_trigger(self, trigger: TriggerDefinition) -> None:
+    def register_trigger(self, trigger: "TriggerDefinitionDTO") -> None:
         """
         Register a trigger definition in Redis.
 
         :param trigger: The trigger definition to register
         """
+        trigger_data = {
+            "trigger_id": trigger.trigger_id,
+            "task_id_key": trigger.task_id.key,
+            "condition_ids": trigger.condition_ids,
+            "logic_value": trigger.logic.value,
+            "argument_provider_json": trigger.argument_provider_json,
+        }
         self.client.set(
             self.key.trigger(trigger.trigger_id),
-            trigger.to_json(self.app),
+            json.dumps(trigger_data),
         )
 
         # Map each condition to this trigger
@@ -112,11 +132,11 @@ class RedisTrigger(BaseTrigger):
 
         # Register with task for easy lookup
         self.client.sadd(
-            self.key.task_triggers(trigger.task_id),
+            self.key.task_triggers(trigger.task_id.key),
             trigger.trigger_id,
         )
 
-    def get_trigger(self, trigger_id: str) -> TriggerDefinition | None:
+    def _get_trigger(self, trigger_id: str) -> Optional["TriggerDefinitionDTO"]:
         """
         Get a trigger definition by ID from Redis.
 
@@ -125,10 +145,13 @@ class RedisTrigger(BaseTrigger):
         """
         trigger_data = self.client.get(self.key.trigger(trigger_id))
         if trigger_data:
-            return TriggerDefinition.from_json(trigger_data.decode(), self.app)
+            data = json.loads(trigger_data.decode())
+            return _trigger_definition_dto_from_json(data)
         return None
 
-    def get_triggers_for_condition(self, condition_id: str) -> list[TriggerDefinition]:
+    def get_triggers_for_condition(
+        self, condition_id: str
+    ) -> list["TriggerDefinitionDTO"]:
         """
         Get all triggers that depend on a specific condition from Redis.
 
@@ -139,23 +162,23 @@ class RedisTrigger(BaseTrigger):
         triggers = []
 
         for trigger_id in trigger_ids:
-            trigger = self.get_trigger(trigger_id.decode())
+            trigger = self._get_trigger(trigger_id.decode())
             if trigger:
                 triggers.append(trigger)
 
         return triggers
 
-    def get_triggers_for_task(self, task_id: str) -> list[TriggerDefinition]:
+    def get_triggers_for_task(self, task_id: "TaskId") -> list["TriggerDefinitionDTO"]:
         """
         Get all triggers associated with a specific task from Redis.
 
         :param task_id: ID of the task to find triggers for
         :return: List of trigger definitions for this task
         """
-        trigger_ids = self.client.smembers(self.key.task_triggers(task_id))
+        trigger_ids = self.client.smembers(self.key.task_triggers(task_id.key))
         triggers = []
         for trigger_id in trigger_ids:
-            trigger = self.get_trigger(trigger_id.decode())
+            trigger = self._get_trigger(trigger_id.decode())
             if trigger:
                 triggers.append(trigger)
 
@@ -329,7 +352,7 @@ class RedisTrigger(BaseTrigger):
             return bool(results and results[0])
 
     def _register_source_task_condition(
-        self, task_id: str, condition_id: "ConditionId"
+        self, task_id: "TaskId", condition_id: str
     ) -> None:
         """
         Register the conditions that are sourced from a task in Redis.
@@ -341,12 +364,12 @@ class RedisTrigger(BaseTrigger):
         :param condition_id: ID of the condition sourced from the task
         """
         self.client.sadd(
-            self.key.source_task_conditions(task_id),
+            self.key.source_task_conditions(task_id.key),
             condition_id,
         )
 
     def get_conditions_sourced_from_task(
-        self, task_id: str, context_type: type["ConditionContext"] | None = None
+        self, task_id: "TaskId", context_type: type["ConditionContext"] | None = None
     ) -> list["TriggerCondition"]:
         """
         Get all conditions that are sourced from a specific task.
@@ -357,7 +380,9 @@ class RedisTrigger(BaseTrigger):
         :param context_type: Optional context type to filter conditions by
         :return: List of conditions monitoring this task
         """
-        condition_ids = self.client.smembers(self.key.source_task_conditions(task_id))
+        condition_ids = self.client.smembers(
+            self.key.source_task_conditions(task_id.key)
+        )
         conditions = []
 
         for condition_id in condition_ids:
@@ -420,7 +445,7 @@ class RedisTrigger(BaseTrigger):
 
         return bool(result)
 
-    def clean_task_trigger_definitions(self, task_id: str) -> None:
+    def clean_task_trigger_definitions(self, task_id: "TaskId") -> None:
         """
         Remove all trigger definitions for a specific task from Redis.
 
@@ -431,7 +456,7 @@ class RedisTrigger(BaseTrigger):
         :param task_id: ID of the task to clean triggers for
         """
         # Get all trigger IDs for this task
-        task_trigger_key = self.key.task_triggers(task_id)
+        task_trigger_key = self.key.task_triggers(task_id.key)
         trigger_ids = self.client.smembers(task_trigger_key)
 
         if not trigger_ids:
@@ -442,7 +467,8 @@ class RedisTrigger(BaseTrigger):
         for trigger_id in trigger_ids:
             trigger_data = self.client.get(self.key.trigger(trigger_id.decode()))
             if trigger_data:
-                trigger = TriggerDefinition.from_json(trigger_data.decode(), self.app)
+                data = json.loads(trigger_data.decode())
+                trigger = _trigger_definition_dto_from_json(data)
                 for condition_id in trigger.condition_ids:
                     pipeline.srem(
                         self.key.condition_triggers(condition_id), trigger_id.decode()

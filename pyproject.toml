@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc>=0.1.0rc101.dev147",
+    "pynenc>=0.1.0rc101.dev150",
     "redis>=4.6.0"
 ]
 
@@ -32,15 +32,15 @@ explicit = true
 
 [project.urls]
 Homepage = "https://pynenc.org"
-Documentation = "https://docs.pynenc.org"
-Repository = "https://github.com/pynenc/pynenc"
+Documentation = "https://docs.pynenc.org/plugins/redis"
+Repository = "https://github.com/pynenc/pynenc_redis"
 
 [project.entry-points."pynenc.plugins"]
 redis_builder = "pynenc_redis.builder:RedisBuilderPlugin"
 redis_orchestrator = "pynenc_redis.orchestrator.redis_orchestrator"
 redis_state_backend = "pynenc_redis.state_backend.redis_state_backend"
 redis_broker = "pynenc_redis.broker.redis_broker"
-redis_arg_cache = "pynenc_redis.arg_cache.redis_arg_cache"
+redis_client_data_store = "pynenc_redis.client_data_store.redis_client_data_store"
 redis_trigger = "pynenc_redis.trigger.redis_trigger"
 
 [dependency-groups]
@@ -59,10 +59,10 @@ dev = [
     "testcontainers[redis]>=4.13.0",
 ]
 tests = [
-    "pynenc[tests]>=0.1.0rc101.dev125",
+    "pynenc[tests]>=0.1.0rc101.dev150",
 ]
 monitor = [
-    "pynenc[monitor]>=0.1.0rc101.dev125",
+    "pynenc[monitor]>=0.1.0rc101.dev150",
 ]
 docs = [
     "sphinx>=7.0",

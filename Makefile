@@ -6,8 +6,9 @@ install:
 .PHONY: refresh-deps
 refresh-deps:
 	@echo "Refreshing uv cache and checking for dependency updates..."
-	uv lock --refresh
-	uv sync --all-extras --all-groups
+	rm -f uv.lock
+	uv lock --refresh --upgrade-package pynenc
+	uv sync --all-extras --all-groups --refresh
 
 .PHONY: install-pre-commit
 install-pre-commit: install

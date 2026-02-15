@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import redis
 from pynenc.broker.base_broker import BaseBroker
+from pynenc.identifiers.invocation_id import InvocationId
 
 from pynenc_redis.conf.config_broker import ConfigBrokerRedis
 from pynenc_redis.util.mongo_client import get_redis_client
@@ -44,12 +45,12 @@ class RedisBroker(BaseBroker):
             config_filepath=self.app.config_filepath,
         )
 
-    def route_invocation(self, invocation_id: str) -> None:
+    def route_invocation(self, invocation_id: "InvocationId") -> None:
         """Route an invocation by sending it to the Redis queue."""
         self.client.rpush(self.key.default_queue(), invocation_id)
         self.app.logger.debug(f"Routed invocation {invocation_id} to Redis queue")
 
-    def route_invocations(self, invocation_ids: list[str]) -> None:
+    def route_invocations(self, invocation_ids: list["InvocationId"]) -> None:
         """Routes multiple invocations at once using Redis pipeline for better performance."""
         if not invocation_ids:
             return
@@ -62,13 +63,13 @@ class RedisBroker(BaseBroker):
             f"Routed {len(invocation_ids)} invocations to Redis queue"
         )
 
-    def retrieve_invocation(self) -> str | None:
+    def retrieve_invocation(self) -> "InvocationId | None":
         """Retrieve the next invocation from the Redis queue."""
         if msg := self.client.blpop(
             self.key.default_queue(), timeout=self.app.broker.conf.queue_timeout_sec
         ):
             # blpop returns tuple of (key, value)
-            return msg[1].decode()
+            return InvocationId(msg[1].decode())
         return None
 
     def count_invocations(self) -> int:

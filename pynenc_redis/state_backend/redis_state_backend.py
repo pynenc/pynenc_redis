@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from datetime import datetime
 from functools import cached_property
@@ -5,7 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 import redis
 from pynenc.exceptions import InvocationNotFoundError
-from pynenc.invocation.dist_invocation import DistributedInvocation
+from pynenc.identifiers.call_id import CallId
+from pynenc.identifiers.invocation_id import InvocationId
+from pynenc.identifiers.task_id import TaskId
+from pynenc.invocation.dist_invocation import InvocationDTO
+from pynenc.models.call_dto import CallDTO
 from pynenc.runner.runner_context import RunnerContext
 from pynenc.state_backend.base_state_backend import BaseStateBackend, InvocationHistory
 from pynenc.workflow import WorkflowIdentity
@@ -17,7 +22,17 @@ from pynenc_redis.util.redis_keys import Key
 
 if TYPE_CHECKING:
     from pynenc.app import AppInfo, Pynenc
-    from pynenc.types import Result
+
+
+def _workflow_identity_from_json(data: dict[str, Any]) -> WorkflowIdentity:
+    """Reconstruct WorkflowIdentity from JSON data."""
+    return WorkflowIdentity(
+        workflow_id=InvocationId(data["workflow_id"]),
+        workflow_type=TaskId.from_key(data["workflow_type_key"]),
+        parent_workflow_id=InvocationId(data["parent_workflow_id"])
+        if data["parent_workflow_id"]
+        else None,
+    )
 
 
 class RedisStateBackend(BaseStateBackend):
@@ -51,30 +66,75 @@ class RedisStateBackend(BaseStateBackend):
         """Clears all data from the Redis backend for the current `app.app_id`."""
         self.key.purge(self.client)
 
-    def upsert_invocations(self, invocations: list["DistributedInvocation"]) -> None:
+    def _upsert_invocations(
+        self, entries: list[tuple["InvocationDTO", "CallDTO"]]
+    ) -> None:
         """
         Updates or inserts multiple invocations.
 
-        :param list[DistributedInvocation] invocations: The invocations to upsert.
+        :param list[tuple[InvocationDTO, CallDTO]] entries: The invocation/call DTO pairs to upsert.
         """
-        for invocation in invocations:
+        for inv_dto, call_dto in entries:
+            wf = inv_dto.workflow
+            invocation_data = {
+                "invocation_id": inv_dto.invocation_id,
+                "call_id_key": call_dto.call_id.key,
+                "task_id_key": call_dto.call_id.task_id.key,
+                "arguments_id": call_dto.call_id.args_id,
+                "serialized_arguments": call_dto.serialized_arguments,
+                "parent_invocation_id": inv_dto.parent_invocation_id,
+                "workflow_id": wf.workflow_id,
+                "workflow_type_key": wf.workflow_type.key,
+                "parent_workflow_id": wf.parent_workflow_id,
+            }
             self.client.set(
-                self.key.invocation(invocation.invocation_id), invocation.to_json()
+                self.key.invocation(inv_dto.invocation_id), json.dumps(invocation_data)
             )
 
-    def _get_invocation(self, invocation_id: str) -> "DistributedInvocation":
+    def _get_invocation(
+        self, invocation_id: str
+    ) -> tuple["InvocationDTO", "CallDTO"] | None:
         """
         Retrieves an invocation from Redis by its ID.
 
-        :param str invocation_id: The ID of the invocation to retrieve.
-        :return: The retrieved invocation object.
+        :param InvocationId invocation_id: The ID of the invocation to retrieve.
+        :return: Tuple of InvocationDTO and CallDTO
         """
-        if inv := self.client.get(self.key.invocation(invocation_id)):
-            return DistributedInvocation.from_json(self.app, inv.decode())
-        raise InvocationNotFoundError(f"Invocation {invocation_id} not found")
+        inv_data = self.client.get(self.key.invocation(invocation_id))
+        if not inv_data:
+            raise InvocationNotFoundError(f"Invocation {invocation_id} not found")
+
+        data = json.loads(inv_data.decode())
+
+        call_id = CallId.from_key(data["call_id_key"])
+        workflow = WorkflowIdentity(
+            workflow_id=InvocationId(data["workflow_id"]),
+            workflow_type=TaskId.from_key(data["workflow_type_key"]),
+            parent_workflow_id=InvocationId(data["parent_workflow_id"])
+            if data["parent_workflow_id"]
+            else None,
+        )
+
+        inv_dto = InvocationDTO(
+            invocation_id=InvocationId(data["invocation_id"]),
+            call_id=call_id,
+            workflow=workflow,
+            parent_invocation_id=InvocationId(data["parent_invocation_id"])
+            if data["parent_invocation_id"]
+            else None,
+        )
+
+        call_dto = CallDTO(
+            call_id=call_id,
+            serialized_arguments=data["serialized_arguments"],
+        )
+
+        return (inv_dto, call_dto)
 
     def _add_histories(
-        self, invocation_ids: list[str], invocation_history: "InvocationHistory"
+        self,
+        invocation_ids: list["InvocationId"],
+        invocation_history: "InvocationHistory",
     ) -> None:
         """
         Adds a histories record for a list of invocations.
@@ -93,7 +153,7 @@ class RedisStateBackend(BaseStateBackend):
             member = f"{invocation_id}:{timestamp_score}:{history_json}"
             self.client.zadd(self.key.history_by_timestamp(), {member: timestamp_score})
 
-    def _get_history(self, invocation_id: str) -> list[InvocationHistory]:
+    def _get_history(self, invocation_id: "InvocationId") -> list["InvocationHistory"]:
         """
         Retrieves the history of an invocation ordered by timestamp.
 
@@ -107,49 +167,51 @@ class RedisStateBackend(BaseStateBackend):
         # Order histories by their _timestamp attribute
         return sorted(histories, key=lambda h: getattr(h, "_timestamp", float("-inf")))
 
-    def _set_result(self, invocation_id: str, result: "Result") -> None:
+    def _set_result(
+        self, invocation_id: "InvocationId", serialized_result: str
+    ) -> None:
         """
         Sets the result of an invocation.
 
         :param str invocation_id: The ID of the invocation to set
-        :param Result result: The result to set
+        :param str serialized_result: The serialized result to set
         """
         self.client.set(
             self.key.result(invocation_id),
-            self.app.serializer.serialize(result),
+            serialized_result,
         )
 
-    def _get_result(self, invocation_id: str) -> "Result":
+    def _get_result(self, invocation_id: "InvocationId") -> str:
         """
         Retrieves the result of an invocation.
 
         :param str invocation_id: The ID of the invocation to get the result from
-        :return: The result value
+        :return: The serialized result string
         """
         if res := self.client.get(self.key.result(invocation_id)):
-            return self.app.serializer.deserialize(res.decode())
+            return res.decode()
         raise KeyError(f"Result for invocation {invocation_id} not found")
 
-    def _set_exception(self, invocation_id: str, exception: "Exception") -> None:
+    def _set_exception(
+        self, invocation_id: "InvocationId", serialized_exception: str
+    ) -> None:
         """
         Sets the raised exception by an invocation ran.
 
         :param str invocation_id: The ID of the invocation to set
-        :param Exception exception: The exception raised
+        :param str serialized_exception: The serialized exception to set
         """
-        self.client.set(
-            self.key.exception(invocation_id), self.serialize_exception(exception)
-        )
+        self.client.set(self.key.exception(invocation_id), serialized_exception)
 
-    def _get_exception(self, invocation_id: str) -> Exception:
+    def _get_exception(self, invocation_id: "InvocationId") -> str:
         """
         Retrieves the exception of an invocation.
 
-        :param str invocation_id: The ID of the invocation to get the exception from
-        :return: The exception object
+        :param InvocationId invocation_id: The ID of the invocation to get the exception from
+        :return: The serialized exception string
         """
         if exc := self.client.get(self.key.exception(invocation_id)):
-            return self.deserialize_exception(exc.decode())
+            return exc.decode()
         raise KeyError(f"Exception for invocation {invocation_id} not found")
 
     def get_workflow_data(
@@ -242,21 +304,26 @@ class RedisStateBackend(BaseStateBackend):
 
         :param workflow_identity: The workflow identity to store
         """
-        # Store the workflow JSON by workflow_id (unique)
+        # Store the workflow data by workflow_id (unique)
         workflow_id_key = self.key.workflow_run_by_id(workflow_identity.workflow_id)
-        self.client.set(workflow_id_key, workflow_identity.to_json())
+        workflow_data = {
+            "workflow_id": workflow_identity.workflow_id,
+            "workflow_type_key": workflow_identity.workflow_type.key,
+            "parent_workflow_id": workflow_identity.parent_workflow_id,
+        }
+        self.client.set(workflow_id_key, json.dumps(workflow_data))
 
         # Add workflow_type to the set of all workflow types
         workflow_types_key = self.key.workflow_types()
-        self.client.sadd(workflow_types_key, workflow_identity.workflow_type)
+        self.client.sadd(workflow_types_key, workflow_identity.workflow_type.key)
 
         # Add workflow_id to the set for this workflow_type
         workflow_type_index_key = self.key.workflow_type_index(
-            workflow_identity.workflow_type
+            workflow_identity.workflow_type.key
         )
         self.client.sadd(workflow_type_index_key, workflow_identity.workflow_id)
 
-    def get_all_workflow_types(self) -> Iterator[str]:
+    def get_all_workflow_types(self) -> Iterator["TaskId"]:
         """
         Retrieve all workflow types (workflow_task_ids) stored in this Redis state backend.
 
@@ -264,7 +331,7 @@ class RedisStateBackend(BaseStateBackend):
         """
         workflow_types_key = self.key.workflow_types()
         workflow_types = self.client.smembers(workflow_types_key)
-        return (wt.decode() for wt in workflow_types)
+        return (TaskId.from_key(wt.decode()) for wt in workflow_types)
 
     def get_all_workflow_runs(self) -> Iterator["WorkflowIdentity"]:
         """
@@ -287,9 +354,12 @@ class RedisStateBackend(BaseStateBackend):
                     workflow_id_key = self.key.workflow_run_by_id(wid_str)
                     wf_json = self.client.get(workflow_id_key)
                     if wf_json:
-                        yield WorkflowIdentity.from_json(wf_json.decode())
+                        data = json.loads(wf_json.decode())
+                        yield _workflow_identity_from_json(data)
 
-    def get_workflow_runs(self, workflow_type: str) -> Iterator["WorkflowIdentity"]:
+    def get_workflow_runs(
+        self, workflow_type: "TaskId"
+    ) -> Iterator["WorkflowIdentity"]:
         """
         Retrieve workflow run identities from this Redis state backend with pagination.
 
@@ -299,16 +369,17 @@ class RedisStateBackend(BaseStateBackend):
         :param workflow_type: Filter for specific workflow type
         :return: Iterator of workflow identities for runs
         """
-        workflow_type_index_key = self.key.workflow_type_index(workflow_type)
+        workflow_type_index_key = self.key.workflow_type_index(workflow_type.key)
         workflow_ids = self.client.smembers(workflow_type_index_key)
         for wid in workflow_ids:
             workflow_id_key = self.key.workflow_run_by_id(wid.decode())
             wf_json = self.client.get(workflow_id_key)
             if wf_json:
-                yield WorkflowIdentity.from_json(wf_json.decode())
+                data = json.loads(wf_json.decode())
+                yield _workflow_identity_from_json(data)
 
     def store_workflow_sub_invocation(
-        self, parent_workflow_id: str, sub_invocation_id: str
+        self, parent_workflow_id: str, sub_invocation_id: "InvocationId"
     ) -> None:
         """
         Store a sub-invocation ID that runs inside a parent workflow.
@@ -319,7 +390,9 @@ class RedisStateBackend(BaseStateBackend):
         sub_invocations_key = self.key.workflow_sub_invocations(parent_workflow_id)
         self.client.sadd(sub_invocations_key, sub_invocation_id)
 
-    def get_workflow_sub_invocations(self, workflow_id: str) -> Iterator[str]:
+    def get_workflow_sub_invocations(
+        self, workflow_id: "InvocationId"
+    ) -> Iterator["InvocationId"]:
         """
         Retrieve all sub-invocation IDs that run inside a specific workflow.
 
@@ -335,7 +408,7 @@ class RedisStateBackend(BaseStateBackend):
         start_time: datetime,
         end_time: datetime,
         batch_size: int = 100,
-    ) -> Iterator[list[str]]:
+    ) -> Iterator[list["InvocationId"]]:
         """
         Iterate over invocation IDs that have history within time range.
 
@@ -365,11 +438,11 @@ class RedisStateBackend(BaseStateBackend):
 
             # Extract unique invocation IDs from members
             # Member format: "invocation_id:timestamp:history_json"
-            seen_ids: set[str] = set()
-            batch: list[str] = []
+            seen_ids: set["InvocationId"] = set()
+            batch: list["InvocationId"] = []
             for member in members:
                 member_str = member.decode() if isinstance(member, bytes) else member
-                invocation_id = member_str.split(":", 1)[0]
+                invocation_id = InvocationId(member_str.split(":", 1)[0])
                 if invocation_id not in seen_ids:
                     seen_ids.add(invocation_id)
                     batch.append(invocation_id)

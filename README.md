@@ -39,7 +39,7 @@ This plugin extends Pynenc with Redis-backed implementations for:
 - **RedisOrchestrator**: Distributed task orchestration and coordination
 - **RedisBroker**: Message queue and task distribution
 - **RedisStateBackend**: Persistent state and result storage
-- **RedisArgCache**: Efficient argument caching for large payloads
+- **RedisClientDataStore**: Efficient argument caching for large payloads
 - **RedisTrigger**: Event-driven and scheduled task execution
 
 ## Installation
@@ -108,7 +108,7 @@ Configure Redis-based argument caching for large payloads:
 app = (
     PynencBuilder()
     .redis(url="redis://localhost:6379")
-    .redis_arg_cache(
+    .redis_client_data_store(
         min_size_to_cache=1024,    # Cache arguments > 1KB
         local_cache_size=1000       # Keep 1000 entries in local cache
     )
@@ -142,7 +142,7 @@ app_id = "my_app"
 orchestrator_cls = "RedisOrchestrator"
 broker_cls = "RedisBroker"
 state_backend_cls = "RedisStateBackend"
-arg_cache_cls = "RedisArgCache"
+client_data_store_cls = "RedisClientDataStore"
 trigger_cls = "RedisTrigger"
 runner_cls = "ProcessRunner"
 
@@ -183,7 +183,7 @@ Persists task state and results:
 - Workflow data persistence
 - App discovery and registration
 
-### RedisArgCache
+### RedisClientDataStore
 
 Optimizes handling of large arguments:
 

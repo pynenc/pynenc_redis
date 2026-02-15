@@ -8,7 +8,7 @@ with backend-specific functionality using the entry points system.
 Key components:
 - RedisBuilderPlugin: Plugin class that registers Redis methods
 - redis(): Main method for full Redis stack configuration
-- redis_arg_cache(): Redis-specific argument caching method
+- redis_client_data_store(): Redis-specific argument caching method
 - redis_trigger(): Redis-specific trigger system method
 """
 
@@ -39,7 +39,9 @@ class RedisBuilderPlugin:
         builder_class.register_plugin_method("redis", redis)
 
         # Register component-specific methods
-        builder_class.register_plugin_method("redis_arg_cache", redis_arg_cache)
+        builder_class.register_plugin_method(
+            "redis_client_data_store", redis_client_data_store
+        )
         builder_class.register_plugin_method("redis_trigger", redis_trigger)
 
         # Register configuration validator
@@ -80,7 +82,7 @@ def redis(
             "orchestrator_cls": "RedisOrchestrator",
             "broker_cls": "RedisBroker",
             "state_backend_cls": "RedisStateBackend",
-            "arg_cache_cls": "RedisArgCache",
+            "client_data_store_cls": "RedisClientDataStore",
             "trigger_cls": "RedisTrigger",
         }
     )
@@ -89,7 +91,7 @@ def redis(
     return builder
 
 
-def redis_arg_cache(
+def redis_client_data_store(
     builder: "PynencBuilder",
     min_size_to_cache: int = 1024,
     local_cache_size: int = 1024,
@@ -115,7 +117,7 @@ def redis_arg_cache(
 
     builder._config.update(
         {
-            "arg_cache_cls": "RedisArgCache",
+            "client_data_store_cls": "RedisClientDataStore",
             "min_size_to_cache": min_size_to_cache,
             "local_cache_size": local_cache_size,
         }
@@ -176,7 +178,7 @@ def validate_redis_config(config: dict[str, Any]) -> None:
             "orchestrator_cls",
             "broker_cls",
             "state_backend_cls",
-            "arg_cache_cls",
+            "client_data_store_cls",
             "trigger_cls",
         ]
     )
