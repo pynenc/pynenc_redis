@@ -16,7 +16,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc>=0.1.0rc101.dev151",
+    "pynenc>=0.1.0rc101.dev161",
     "redis>=4.6.0"
 ]
 

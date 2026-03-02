@@ -291,6 +291,15 @@ class Key:
         """
         return f"{self.prefix}workflow:{workflow_id}:sub_invocations"
 
+    def parent_invocation_children(self, parent_invocation_id: str) -> str:
+        """
+        Get key for storing child invocation IDs spawned by a parent invocation.
+
+        :param parent_invocation_id: The parent invocation ID
+        :return: Redis key for parent's child invocations set
+        """
+        return f"{self.prefix}parent_invocation_children:{parent_invocation_id}"
+
     @staticmethod
     def all_apps_info_key(app_id: str) -> str:
         """

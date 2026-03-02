@@ -91,6 +91,13 @@ class RedisStateBackend(BaseStateBackend):
                 self.key.invocation(inv_dto.invocation_id), json.dumps(invocation_data)
             )
 
+            # Maintain parent-to-children index
+            if inv_dto.parent_invocation_id:
+                self.client.sadd(
+                    self.key.parent_invocation_children(inv_dto.parent_invocation_id),
+                    inv_dto.invocation_id,
+                )
+
     def _get_invocation(
         self, invocation_id: str
     ) -> tuple["InvocationDTO", "CallDTO"] | None:
@@ -552,3 +559,19 @@ class RedisStateBackend(BaseStateBackend):
                 contexts.append(RunnerContext.from_json(ctx_data.decode()))
 
         return contexts
+
+    def get_child_invocations(
+        self, parent_invocation_id: "InvocationId"
+    ) -> Iterator["InvocationId"]:
+        """
+        Return IDs of all invocations directly spawned by the given parent.
+
+        Used for family-tree traversal: given a parent invocation ID, find all
+        invocations that recorded it as their ``parent_invocation_id``.
+
+        :param parent_invocation_id: The invocation ID to find children for.
+        :return: Iterator of child invocation IDs (may be empty).
+        """
+        children_key = self.key.parent_invocation_children(parent_invocation_id)
+        child_ids = self.client.smembers(children_key)
+        return (InvocationId(cid.decode()) for cid in child_ids)
