@@ -300,6 +300,24 @@ class Key:
         """
         return f"{self.prefix}parent_invocation_children:{parent_invocation_id}"
 
+    def workflow_invocations(self, workflow_id: str) -> str:
+        """
+        Get key for storing invocation IDs that belong to a specific workflow.
+
+        :param workflow_id: ID of the workflow
+        :return: Redis key for workflow invocations set
+        """
+        return f"{self.prefix}workflow:invocations:{workflow_id}"
+
+    def workflow_type_invocations(self, workflow_type_key: str) -> str:
+        """
+        Get key for storing invocation IDs grouped by workflow type.
+
+        :param workflow_type_key: The workflow type key (task_id key)
+        :return: Redis key for workflow type invocations set
+        """
+        return f"{self.prefix}workflow:type_invocations:{workflow_type_key}"
+
     @staticmethod
     def all_apps_info_key(app_id: str) -> str:
         """

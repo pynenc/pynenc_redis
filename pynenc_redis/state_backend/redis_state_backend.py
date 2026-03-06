@@ -98,6 +98,16 @@ class RedisStateBackend(BaseStateBackend):
                     inv_dto.invocation_id,
                 )
 
+            # Maintain workflow-to-invocations indices
+            self.client.sadd(
+                self.key.workflow_invocations(wf.workflow_id),
+                inv_dto.invocation_id,
+            )
+            self.client.sadd(
+                self.key.workflow_type_invocations(wf.workflow_type.key),
+                inv_dto.invocation_id,
+            )
+
     def _get_invocation(
         self, invocation_id: str
     ) -> tuple["InvocationDTO", "CallDTO"] | None:
@@ -575,3 +585,59 @@ class RedisStateBackend(BaseStateBackend):
         children_key = self.key.parent_invocation_children(parent_invocation_id)
         child_ids = self.client.smembers(children_key)
         return (InvocationId(cid.decode()) for cid in child_ids)
+
+    def get_matching_runner_contexts(
+        self, partial_id: str
+    ) -> Iterator["RunnerContext"]:
+        """
+        Search runner contexts by partial ID match.
+
+        Uses Redis SCAN pattern matching to find all runner contexts whose ID
+        contains the given partial string.
+
+        :param partial_id: Partial string to match in runner context IDs
+        :return: Iterator of matching RunnerContext objects
+        """
+        pattern = f"*{partial_id}*"
+        for key in self.client.scan_iter(
+            match=self.key.runner_context(pattern), count=100
+        ):
+            ctx_data = self.client.get(key)
+            if ctx_data:
+                yield RunnerContext.from_json(ctx_data.decode())
+
+    def get_invocation_ids_by_workflow(
+        self,
+        workflow_id: str | None = None,
+        workflow_type_key: str | None = None,
+    ) -> Iterator["InvocationId"]:
+        """
+        Retrieve invocation IDs filtered by workflow criteria.
+
+        Returns invocations matching the provided workflow_id and/or workflow_type_key.
+        If both are provided, returns the intersection. If neither is provided,
+        returns an empty iterator.
+
+        :param workflow_id: Optional workflow ID to filter by
+        :param workflow_type_key: Optional workflow type key to filter by
+        :return: Iterator of matching invocation IDs
+        """
+        if not workflow_id and not workflow_type_key:
+            return iter([])
+
+        inv_ids: set[bytes] = set()
+
+        if workflow_id:
+            inv_ids = self.client.smembers(self.key.workflow_invocations(workflow_id))
+
+        if workflow_type_key:
+            type_inv_ids = self.client.smembers(
+                self.key.workflow_type_invocations(workflow_type_key)
+            )
+            # If we already have results from workflow_id, intersect them
+            if workflow_id and inv_ids:
+                inv_ids = inv_ids & type_inv_ids
+            else:
+                inv_ids = type_inv_ids
+
+        return (InvocationId(iid.decode()) for iid in inv_ids)
