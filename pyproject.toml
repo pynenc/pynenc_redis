@@ -49,7 +49,7 @@ dev = [
     "mypy==1.7.0",
     "ruff>=0.14.0",
     "types-redis==4.6.0.2",
-    "types-PyYAML==6.0.12.12",
+    "types-PyYAML==6.0.12.20250915",
     "pre-commit>=3.5.0",
     "types-requests>=2.32.0.20250602",
     "fakeredis>=2.21.0",
