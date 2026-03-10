@@ -16,12 +16,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc>=0.1.0rc101.dev166",
+    "pynenc>=0.1.0",
     "redis>=4.6.0"
 ]
-
-[tool.uv.sources]
-pynenc = { index = "testpypi" }
 
 [[tool.uv.index]]
 name = "testpypi"
@@ -59,17 +56,17 @@ dev = [
     "testcontainers[redis]>=4.13.0",
 ]
 tests = [
-    "pynenc[tests]>=0.1.0rc101.dev166",
+    "pynenc[tests]>=0.1.0",
 ]
 monitor = [
-    "pynenc[monitor]>=0.1.0rc101.dev166",
+    "pynenc[monitor]>=0.1.0",
 ]
 docs = [
-    "sphinx>=7.0",
-    "myst-parser>=2",
-    "furo>=2023",
+    "sphinx>=8.0,<9",
+    "myst-parser>=4.0",
+    "furo>=2024",
     "sphinx-copybutton>=0.5.2",
-    "sphinx-design>=0.5.0",
+    "sphinx-design>=0.6.0",
     "sphinx-inline-tabs>=2023.4.21",
     "sphinx-autodoc2>=0.5.0",
 ]
