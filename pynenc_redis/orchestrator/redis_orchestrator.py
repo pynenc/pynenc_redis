@@ -1,22 +1,21 @@
-import threading
+import json
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import UTC, datetime
 from functools import cached_property
 from time import time
 from typing import TYPE_CHECKING
 
 import redis
-from pynenc.call import Call
-from pynenc.exceptions import (
-    CycleDetectedError,
-    InvocationOnFinalStatusError,
-    PendingInvocationLockError,
-)
+from pynenc.identifiers.invocation_id import InvocationId
 from pynenc.invocation.dist_invocation import DistributedInvocation
-from pynenc.invocation.status import InvocationStatus
+from pynenc.invocation.status import (
+    InvocationStatus,
+    InvocationStatusRecord,
+    status_record_transition,
+)
+from pynenc.orchestrator.atomic_service import ActiveRunnerInfo
 from pynenc.orchestrator.base_orchestrator import (
     BaseBlockingControl,
-    BaseCycleControl,
     BaseOrchestrator,
 )
 from pynenc.types import Params, Result
@@ -27,179 +26,13 @@ from pynenc_redis.util.redis_keys import Key
 
 if TYPE_CHECKING:
     from pynenc.app import Pynenc
-    from pynenc.task import Task
-
-
-# Thread registry to avoid duplicating status update threads for the same invocation
-_pending_resolution_threads: dict[str, Future[None]] = {}
-_registry_lock = threading.Lock()
-
-
-def _clean_dead_threads() -> None:
-    """Remove completed futures from the registry to prevent memory leaks."""
-    with _registry_lock:
-        completed_keys = [
-            inv_id
-            for inv_id, future in _pending_resolution_threads.items()
-            if future.done()
-        ]
-        for inv_id in completed_keys:
-            _pending_resolution_threads.pop(inv_id)
+    from pynenc.identifiers.call_id import CallId
+    from pynenc.invocation.dist_invocation import DistributedInvocation
+    from pynenc.task import Task, TaskId
 
 
 class StatusNotFound(Exception):
     """Raised when a status is not found in Redis"""
-
-
-class RedisCycleControl(BaseCycleControl):
-    """
-    A Redis-based implementation of cycle control using a directed acyclic graph (DAG).
-
-    This class manages the dependencies between task invocations in Redis
-    to prevent cycles in task calling patterns, which could lead to deadlocks or infinite loops.
-
-    :param Pynenc app: The Pynenc application instance.
-    :param redis.Redis client: The Redis client instance.
-    """
-
-    def __init__(self, app: "Pynenc", client: redis.Redis) -> None:
-        self.app = app
-        self.key = Key(app.app_id, "cycle_control")
-        self.client = client
-
-    def purge(self) -> None:
-        """Purges all data related to cycle control from Redis."""
-        self.key.purge(self.client)
-
-    def add_call_and_check_cycles(
-        self, caller: "DistributedInvocation", callee: "DistributedInvocation"
-    ) -> None:
-        """Adds a new call relationship between invocations and checks for potential cycles."""
-        if caller.call_id == callee.call_id:
-            raise CycleDetectedError.from_cycle([caller.call])
-        if cycle := self.find_cycle_caused_by_new_invocation(caller, callee):
-            raise CycleDetectedError.from_cycle(cycle)
-        self.client.set(self.key.call(caller.call_id), caller.call.to_json())
-        self.client.set(self.key.call(callee.call_id), callee.call.to_json())
-        self.client.sadd(self.key.edge(caller.call_id), callee.call_id)
-        self.client.sadd(self.key.reverse_edge(callee.call_id), caller.call_id)
-
-    def get_callees(self, caller_call_id: str) -> Iterator[str]:
-        """
-        Returns an iterator of direct callee call_ids for the given caller_call_id.
-
-        :param caller_call_id: The call_id of the caller invocation.
-        :return: Iterator of callee call_ids.
-        """
-        for callee_call_id in self.client.smembers(self.key.edge(caller_call_id)):
-            yield callee_call_id.decode()
-
-    def _get_all_call_ids(self) -> Iterator[str]:
-        """Returns an iterator of all call_ids in the graph."""
-        for key in self.client.scan_iter(match=self.key.call("*")):
-            yield key.decode().split(":")[-1]
-
-    def _get_all_edges(self) -> Iterator[tuple[str, str]]:
-        """Returns an iterator of all edges in the graph as (caller_call_id, callee_call_id) tuples."""
-        for key in self.client.scan_iter(match=self.key.edge("*")):
-            key_str = key.decode()
-            caller_call_id = key_str.split(":")[-1]
-            for callee_bytes in self.client.smembers(key):
-                callee_call_id = callee_bytes.decode()
-                yield (caller_call_id, callee_call_id)
-
-    def _get_all_reverse_edges(self) -> Iterator[tuple[str, str]]:
-        """Returns an iterator of all reverse edges in the graph as (callee_call_id, caller_call_id) tuples."""
-        for key in self.client.scan_iter(match=self.key.reverse_edge("*")):
-            key_str = key.decode()
-            caller_call_id = key_str.split(":")[-1]
-            for callee_bytes in self.client.smembers(key):
-                callee_call_id = callee_bytes.decode()
-                yield (caller_call_id, callee_call_id)
-
-    def remove_edges(self, call_id: str) -> None:
-        """
-        Removes all outgoing and incoming edges for a given call in the graph.
-
-        :param call_id: The ID of the call whose edges should be removed.
-        """
-        # Remove outgoing edges
-        self.client.delete(self.key.edge(call_id))
-        # Remove incoming edges: for each caller in reverse_edge, remove call_id from their edge set
-        for caller_call_id_bytes in self.client.smembers(
-            self.key.reverse_edge(call_id)
-        ):
-            caller_call_id = caller_call_id_bytes.decode()
-            self.client.srem(self.key.edge(caller_call_id), call_id)
-        # Remove reverse edge set for call_id
-        self.client.delete(self.key.reverse_edge(call_id))
-
-    def clean_up_invocation_cycles(self, invocation_id: str) -> None:
-        """
-        Cleans up any cycle-related data when an invocation is finished.
-
-        :param invocation_id: The ID of the invocation that has finished.
-        """
-        call_id = self.app.orchestrator.get_invocation_call_id(invocation_id)
-        if not self.app.orchestrator.any_non_final_invocations(call_id):
-            self.client.delete(self.key.call(call_id))
-            self.remove_edges(call_id)
-
-    def find_cycle_caused_by_new_invocation(
-        self, caller: "DistributedInvocation", callee: "DistributedInvocation"
-    ) -> list["Call"]:
-        """
-        Checks if adding a new call from `caller` to `callee` would create a cycle.
-        :param DistributedInvocation caller: The invocation making the call.
-        :param DistributedInvocation callee: The invocation being called.
-        :return: List of `Call` objects forming the cycle, if a cycle is detected; otherwise, an empty list.
-        """
-        # Temporarily add the edge to check if it would cause a cycle
-        self.client.sadd(self.key.edge(caller.call_id), callee.call_id)
-
-        # Set for tracking visited nodes
-        visited: set[str] = set()
-
-        # List for tracking the nodes on the path from caller to callee
-        path: list[str] = []
-
-        cycle = self._is_cyclic_util(caller.call_id, visited, path)
-
-        # Remove the temporarily added edge
-        self.client.srem(self.key.edge(caller.call_id), callee.call_id)
-
-        return cycle
-
-    def _is_cyclic_util(
-        self,
-        current_call_id: str,
-        visited: set[str],
-        path: list[str],
-    ) -> list["Call"]:
-        """
-        A utility function for cycle detection.
-        :param str current_call_id: The current call ID being examined.
-        :param set[str] visited: A set of visited call IDs for cycle detection.
-        :param list[str] path: A list representing the current path of call IDs.
-        :return: List of `Call` objects forming a cycle, if a cycle is detected; otherwise, an empty list.
-        """
-        visited.add(current_call_id)
-        path.append(current_call_id)
-
-        call_cycle = []
-        for _neighbour_call_id in self.client.smembers(self.key.edge(current_call_id)):
-            neighbour_call_id = _neighbour_call_id.decode()
-            if neighbour_call_id not in visited:
-                cycle = self._is_cyclic_util(neighbour_call_id, visited, path)
-                if cycle:
-                    return cycle
-            elif neighbour_call_id in path:
-                cycle_start_index = path.index(neighbour_call_id)
-                for _id in path[cycle_start_index:]:
-                    if call_json := self.client.get(self.key.call(_id)):
-                        call_cycle.append(Call.from_json(self.app, call_json.decode()))
-        path.pop()
-        return call_cycle
 
 
 class RedisBlockingControl(BaseBlockingControl):
@@ -223,7 +56,9 @@ class RedisBlockingControl(BaseBlockingControl):
         self.key.purge(self.client)
 
     def waiting_for_results(
-        self, caller_invocation_id: str, result_invocation_ids: list[str]
+        self,
+        caller_invocation_id: "InvocationId",
+        result_invocation_ids: list["InvocationId"],
     ) -> None:
         """
         Notifies the system that an invocation is waiting for the results of other invocations.
@@ -268,7 +103,9 @@ class RedisBlockingControl(BaseBlockingControl):
         self.client.zrem(self.key.all_waited(), waited_invocation_id)
         self.client.zrem(self.key.not_waiting(), waited_invocation_id)
 
-    def get_blocking_invocations(self, max_num_invocations: int) -> Iterator[str]:
+    def get_blocking_invocations(
+        self, max_num_invocations: int
+    ) -> Iterator["InvocationId"]:
         """
         Retrieves invocation IDs that are blocking others but are not blocked themselves.
 
@@ -287,18 +124,20 @@ class RedisBlockingControl(BaseBlockingControl):
                 break
             index += page_size
             for waited_invocation_id in page:
-                invocation_id = waited_invocation_id.decode()
+                invocation_id = InvocationId(waited_invocation_id.decode())
                 val_inv_id = self.client.get(self.key.invocation(invocation_id))
                 if not val_inv_id:
                     continue
                 try:
-                    status = self.app.orchestrator.get_invocation_status(invocation_id)
-                    if status.is_available_for_run():
+                    status_record = self.app.orchestrator.get_invocation_status_record(
+                        invocation_id
+                    )
+                    if status_record.status.is_available_for_run():
                         yield invocation_id
                         count += 1
                     if count == max_num_invocations:
                         break
-                except StatusNotFound:
+                except KeyError:
                     self.app.logger.warning(
                         f"Skipping invocation {invocation_id} in get_blocking_invocations: "
                         "status not found in Redis"
@@ -311,18 +150,15 @@ class RedisOrchestrator(BaseOrchestrator):
     """
     Orchestrator implementation using Redis for distributed invocation management.
 
-    Stores status and retry counters by invocation_id, mirroring MemOrchestrator logic.
+    Stores status records with ownership tracking by invocation_id, using atomic
+    transactions for status changes.
     """
 
     def __init__(self, app: "Pynenc") -> None:
         super().__init__(app)
         self._client: redis.Redis | None = None
-        self._cycle_control: RedisCycleControl | None = None
         self._blocking_control: RedisBlockingControl | None = None
         self.key = Key(app.app_id, "orchestrator")
-        self._executor = ThreadPoolExecutor(
-            max_workers=self.conf.max_pending_resolution_threads
-        )
 
     @cached_property
     def conf(self) -> ConfigOrchestratorRedis:
@@ -338,12 +174,6 @@ class RedisOrchestrator(BaseOrchestrator):
         return self._client
 
     @property
-    def cycle_control(self) -> "RedisCycleControl":
-        if not self._cycle_control:
-            self._cycle_control = RedisCycleControl(self.app, self.client)
-        return self._cycle_control
-
-    @property
     def blocking_control(self) -> "RedisBlockingControl":
         if not self._blocking_control:
             self._blocking_control = RedisBlockingControl(self.app, self.client)
@@ -353,8 +183,8 @@ class RedisOrchestrator(BaseOrchestrator):
         self,
         task: "Task[Params, Result]",
         key_serialized_arguments: dict[str, str] | None = None,
-        statuses: list["InvocationStatus"] | None = None,
-    ) -> Iterator[str]:
+        statuses: list[InvocationStatus] | None = None,
+    ) -> Iterator["InvocationId"]:
         """
         Retrieves existing invocation IDs based on task, arguments, and status.
 
@@ -363,64 +193,173 @@ class RedisOrchestrator(BaseOrchestrator):
         :param statuses: The statuses to filter invocations.
         :return: An iterator over the matching invocation IDs.
         """
-        task_id: str = task.task_id
+        task_id_key: str = task.task_id.key
         invocation_ids: set[str] = set()
-        for inv_id in self.client.smembers(self.key.task(task_id)):
-            invocation_ids.add(inv_id.decode() if isinstance(inv_id, bytes) else inv_id)
+        for inv_id in self.client.smembers(self.key.task(task_id_key)):
+            invocation_ids.add(
+                InvocationId(inv_id.decode())
+                if isinstance(inv_id, bytes)
+                else InvocationId(inv_id)
+            )
         if key_serialized_arguments:
             for arg, val in key_serialized_arguments.items():
                 arg_val_ids = {
-                    id.decode() if isinstance(id, bytes) else id
-                    for id in self.client.smembers(self.key.args(task_id, arg, val))
+                    InvocationId(id.decode())
+                    if isinstance(id, bytes)
+                    else InvocationId(id)
+                    for id in self.client.smembers(self.key.args(task_id_key, arg, val))
                 }
                 invocation_ids &= arg_val_ids
         if statuses:
             status_ids: set[str] = set()
             for status in statuses:
                 status_ids |= {
-                    id.decode() if isinstance(id, bytes) else id
+                    InvocationId(id.decode())
+                    if isinstance(id, bytes)
+                    else InvocationId(id)
                     for id in self.client.smembers(
                         self.key.status_to_invocations(status)
                     )
                 }
             invocation_ids &= status_ids
         for inv_id in invocation_ids:
-            yield inv_id
+            yield InvocationId(inv_id)
 
-    def get_task_invocation_ids(self, task_id: str) -> Iterator[str]:
+    def get_task_invocation_ids(self, task_id: "TaskId") -> Iterator["InvocationId"]:
         """
         Retrieves all invocation IDs associated with a specific task ID.
 
         :param task_id: The task ID to filter invocations.
         :return: Iterator of invocation IDs for the specified task.
         """
-        for inv_id in self.client.smembers(self.key.task(task_id)):
-            yield inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+        for inv_id in self.client.smembers(self.key.task(task_id.key)):
+            yield (
+                InvocationId(inv_id.decode())
+                if isinstance(inv_id, bytes)
+                else InvocationId(inv_id)
+            )
 
-    def get_call_invocation_ids(self, call_id: str) -> Iterator[str]:
+    def get_invocation_ids_paginated(
+        self,
+        task_id: "TaskId | None" = None,
+        statuses: list[InvocationStatus] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list["InvocationId"]:
+        """
+        Retrieves invocation IDs with pagination support.
+
+        Uses Redis sorted sets indexed by registration time for efficient pagination.
+        Results are ordered by registration time (newest first).
+
+        :param task_id: Optional task ID to filter by.
+        :param statuses: Optional statuses to filter by.
+        :param limit: Maximum number of results to return.
+        :param offset: Number of results to skip.
+        :return: List of matching invocation IDs.
+        """
+        # Determine which sorted set to use based on task_id filter
+        if task_id:
+            source_key = self.key.task_invocations_by_time(task_id)
+        else:
+            source_key = self.key.all_invocations_by_time()
+
+        # If no status filter, use direct range query (newest first = reverse order)
+        if not statuses:
+            raw_ids = self.client.zrevrange(source_key, offset, offset + limit - 1)
+            return [
+                InvocationId(inv_id.decode())
+                if isinstance(inv_id, bytes)
+                else InvocationId(inv_id)
+                for inv_id in raw_ids
+            ]
+
+        # With status filter, need to intersect with status sets
+        status_keys = [self.key.status_to_invocations(status) for status in statuses]
+
+        # Get all invocation IDs from status sets
+        status_inv_ids: set[str] = set()
+        for status_key in status_keys:
+            for inv_id in self.client.smembers(status_key):
+                decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+                status_inv_ids.add(decoded_id)
+
+        if not status_inv_ids:
+            return []
+
+        # Get invocations from time-sorted set with their scores for ordering
+        # Using zrevrange with scores to get all, then filter and paginate
+        all_with_scores = self.client.zrevrange(source_key, 0, -1, withscores=True)
+
+        # Filter by status and collect in order
+        filtered_ids = []
+        for inv_id, _score in all_with_scores:
+            decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+            if decoded_id in status_inv_ids:
+                filtered_ids.append(decoded_id)
+
+        # Apply pagination
+        return filtered_ids[offset : offset + limit]
+
+    def count_invocations(
+        self,
+        task_id: "TaskId | None" = None,
+        statuses: list[InvocationStatus] | None = None,
+    ) -> int:
+        """
+        Counts invocations matching the given filters.
+
+        :param task_id: Optional task ID to filter by.
+        :param statuses: Optional statuses to filter by.
+        :return: The total count of matching invocations.
+        """
+        # Determine source based on task_id filter
+        if task_id:
+            source_key = self.key.task_invocations_by_time(task_id.key)
+        else:
+            source_key = self.key.all_invocations_by_time()
+
+        # If no status filter, return count from sorted set
+        if not statuses:
+            return self.client.zcard(source_key)
+
+        # With status filter, need to count intersection
+        # Get all invocation IDs from the source
+        source_inv_ids: set["InvocationId"] = {
+            InvocationId(inv_id.decode())
+            if isinstance(inv_id, bytes)
+            else InvocationId(inv_id)
+            for inv_id in self.client.zrange(source_key, 0, -1)
+        }
+
+        if not source_inv_ids:
+            return 0
+
+        # Get all invocation IDs matching any of the statuses
+        status_inv_ids: set[str] = set()
+        for status in statuses:
+            for inv_id in self.client.smembers(self.key.status_to_invocations(status)):
+                decoded_id = inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+                status_inv_ids.add(decoded_id)
+
+        # Return count of intersection
+        return len(source_inv_ids & status_inv_ids)
+
+    def get_call_invocation_ids(self, call_id: "CallId") -> Iterator["InvocationId"]:
         """
         Retrieves all invocation IDs associated with a specific call ID.
 
         :param call_id: The call ID to filter invocations.
         :return: Iterator of invocation IDs for the specified call.
         """
-        for inv_id in self.client.smembers(self.key.call_to_invocation(call_id)):
-            yield inv_id.decode() if isinstance(inv_id, bytes) else inv_id
+        for inv_id in self.client.smembers(self.key.call_to_invocation(call_id.key)):
+            yield (
+                InvocationId(inv_id.decode())
+                if isinstance(inv_id, bytes)
+                else InvocationId(inv_id)
+            )
 
-    def get_invocation_call_id(self, invocation_id: str) -> str:
-        """
-        Retrieves the call ID associated with a specific invocation ID.
-
-        :param invocation_id: The invocation ID to look up.
-        :return: The call ID associated with the invocation.
-        :raises KeyError: If the mapping is not found.
-        """
-        self.client.get(self.key.invocation_to_call(invocation_id))
-        if call_id := self.client.get(self.key.invocation_to_call(invocation_id)):
-            return call_id.decode() if isinstance(call_id, bytes) else call_id
-        raise KeyError(f"Invocation to call mapping for {invocation_id} not found")
-
-    def any_non_final_invocations(self, call_id: str) -> bool:
+    def any_non_final_invocations(self, call_id: "CallId") -> bool:
         """
         Checks if there are any non-final invocations for a specific call ID.
 
@@ -428,20 +367,23 @@ class RedisOrchestrator(BaseOrchestrator):
         :return: True if there are non-final invocations, False otherwise.
         """
         for invocation_id in self.get_call_invocation_ids(call_id):
-            status = self.get_invocation_status(invocation_id)
-            if not status.is_final():
+            status_record = self.get_invocation_status_record(invocation_id)
+            if not status_record.status.is_final():
                 return True
         return False
 
     def _register_new_invocations(
-        self, invocations: list["DistributedInvocation[Params, Result]"]
-    ) -> None:
+        self,
+        invocations: list["DistributedInvocation[Params, Result]"],
+        runner_id: str | None = None,
+    ) -> InvocationStatusRecord:
         """
         Register new invocations with status REGISTERED if they don't exist yet.
 
         Initializes the necessary Redis data structures for task-to-invocation,
         call-to-invocation mappings, status, and retry tracking.
         """
+        status_record = InvocationStatusRecord(InvocationStatus.REGISTERED, runner_id)
         for invocation in invocations:
             # Skip if already registered
             if self.client.exists(
@@ -451,112 +393,106 @@ class RedisOrchestrator(BaseOrchestrator):
 
             # Add to task's invocation set
             self.client.sadd(
-                self.key.task(invocation.task.task_id), invocation.invocation_id
+                self.key.task(invocation.task.task_id.key), invocation.invocation_id
             )
 
             # Add to call's invocation set
             self.client.sadd(
-                self.key.call_to_invocation(invocation.call_id),
+                self.key.call_to_invocation(invocation.call.call_id.key),
                 invocation.invocation_id,
             )
 
             # Store invocation_id -> call_id mapping
             self.client.set(
                 self.key.invocation_to_call(invocation.invocation_id),
-                invocation.call_id,
+                invocation.call.call_id.key,
             )
 
             # Set status to REGISTERED
-            self._set_status(invocation.invocation_id, InvocationStatus.REGISTERED)
+            self._set_status_record(invocation.invocation_id, status_record)
 
             # Initialize retry count to 0
             self.client.set(self.key.invocation_retries(invocation.invocation_id), 0)
 
-    def get_status(self, invocation_id: str) -> InvocationStatus:
+            # Add to time-indexed sorted sets for pagination support
+            registration_time = time()
+            self.client.zadd(
+                self.key.all_invocations_by_time(),
+                {invocation.invocation_id: registration_time},
+            )
+            self.client.zadd(
+                self.key.task_invocations_by_time(invocation.task.task_id.key),
+                {invocation.invocation_id: registration_time},
+            )
+        return status_record
+
+    def _set_status_record(
+        self, invocation_id: str, status_record: InvocationStatusRecord
+    ) -> None:
+        """Store a status record in Redis."""
+        pipeline = self.client.pipeline(transaction=True)
+        pipeline.sadd(
+            self.key.status_to_invocations(status_record.status), invocation_id
+        )
+        pipeline.set(
+            self.key.invocation_to_status(invocation_id),
+            json.dumps(status_record.to_json()),
+        )
+        pipeline.execute()
+
+    def _atomic_status_transition(
+        self, invocation_id: str, status: InvocationStatus, runner_id: str | None = None
+    ) -> InvocationStatusRecord:
+        """
+        Perform atomic status transition with validation.
+
+        Uses Redis transactions to ensure atomic updates with ownership validation.
+        """
+        # Get current status record
+        current_record = self.get_invocation_status_record(invocation_id)
+
+        # Validate and compute new record
+        new_record = status_record_transition(current_record, status, runner_id)
+
+        # Use Redis transaction for atomic update
+        pipeline = self.client.pipeline(transaction=True)
+
+        # Remove from old status set
+        pipeline.srem(
+            self.key.status_to_invocations(current_record.status), invocation_id
+        )
+
+        # Add to new status set and update status record
+        pipeline.sadd(self.key.status_to_invocations(new_record.status), invocation_id)
+        pipeline.set(
+            self.key.invocation_to_status(invocation_id),
+            json.dumps(new_record.to_json()),
+        )
+
+        pipeline.execute()
+
+        self.app.logger.debug(
+            f"Transitioned invocation {invocation_id} from {current_record.status} to {status}"
+        )
+
+        return new_record
+
+    def get_invocation_status_record(
+        self, invocation_id: "InvocationId"
+    ) -> InvocationStatusRecord:
+        """
+        Retrieves the status record of a specific invocation.
+
+        :param invocation_id: The id of the invocation whose status is to be retrieved.
+        :return: The current status record of the invocation.
+        :raises KeyError: If invocation not found.
+        """
         if encoded_status := self.client.get(
             self.key.invocation_to_status(invocation_id)
         ):
-            return InvocationStatus(encoded_status.decode())
-        raise StatusNotFound(f"Invocation status {invocation_id} not found in Redis")
-
-    def _set_status(self, invocation_id: str, status: "InvocationStatus") -> None:
-        pipeline = self.client.pipeline(transaction=True)
-        pipeline.sadd(self.key.status_to_invocations(status), invocation_id)
-        pipeline.set(self.key.invocation_to_status(invocation_id), status.value)
-        pipeline.execute()
-
-    def _set_invocation_status(
-        self,
-        invocation_id: str,
-        status: "InvocationStatus",
-    ) -> None:
-        """
-        Sets the status of a specific invocation.
-
-        :param invocation_id: The ID of the invocation to update.
-        :param status: The new status to set for the invocation.
-        """
-        pipeline = self.client.pipeline(transaction=True)
-        try:
-            previous_status = self.get_status(invocation_id)
-            if previous_status.is_final():
-                raise InvocationOnFinalStatusError(
-                    invocation_id, previous_status, status
-                )
-        except StatusNotFound:
-            previous_status = None
-
-        if previous_status is not None:
-            self.client.srem(
-                self.key.status_to_invocations(previous_status), invocation_id
-            )
-        # Add to new status set
-        self._set_status(invocation_id, status)
-        # Clean up pending status if applicable
-        if status != InvocationStatus.PENDING:
-            self.client.delete(self.key.pending_timer(invocation_id))
-            self.client.delete(self.key.previous_status(invocation_id))
-
-        pipeline.execute()
-        self.app.logger.debug(f"Set status of invocation {invocation_id} to {status}")
-
-    def _set_invocation_pending_status(self, invocation_id: str) -> None:
-        """
-        Sets the status of an invocation to pending.
-
-        :param invocation_id: The ID of the invocation to update.
-        """
-        lock = self.client.lock(
-            f"lock:pending_status:{invocation_id}",
-            blocking_timeout=self.app.conf.max_pending_seconds,
-        )
-        if not lock.acquire(blocking=True):
-            raise PendingInvocationLockError(invocation_id)
-        try:
-            self.client.set(self.key.pending_timer(invocation_id), time())
-            previous_status = self.get_status(invocation_id)
-            if previous_status == InvocationStatus.PENDING:
-                raise PendingInvocationLockError(invocation_id)
-            self.client.set(
-                self.key.previous_status(invocation_id), previous_status.value
-            )
-            self._set_invocation_status(invocation_id, InvocationStatus.PENDING)
-        finally:
-            lock.release()
-        self.app.logger.debug(f"Set status of invocation {invocation_id} to pending")
-
-    def get_invocation_pending_timer(self, invocation_id: str) -> float | None:
-        """
-        Retrieves the pending timer for a specific invocation.
-
-        :param invocation_id: The ID of the invocation to look up.
-        :return: The pending timer value, or None if not set.
-        """
-        pending_timer_key = self.key.pending_timer(invocation_id)
-        encoded_pending_timer = self.client.get(pending_timer_key)
-        if encoded_pending_timer:
-            return float(encoded_pending_timer.decode())
-        return None
+            status_dict = json.loads(encoded_status.decode())
+            return InvocationStatusRecord.from_json(status_dict)
+        raise KeyError(f"Invocation status {invocation_id} not found in Redis")
 
     def index_arguments_for_concurrency_control(
         self,
@@ -567,9 +503,9 @@ class RedisOrchestrator(BaseOrchestrator):
 
         :param invocation: The invocation to be cached.
         """
-        for key, value in invocation.serialized_arguments.items():
+        for key, value in invocation.call.serialized_arguments.items():
             self.client.sadd(
-                self.key.args(invocation.task.task_id, key, value),
+                self.key.args(invocation.task.task_id.key, key, value),
                 invocation.invocation_id,
             )
 
@@ -587,12 +523,7 @@ class RedisOrchestrator(BaseOrchestrator):
     def auto_purge(self) -> None:
         """
         Automatically purges invocations that have been in their final state beyond a specified duration.
-
-        ```{note}
-            The duration is specified in the configuration file using the `auto_final_invocation_purge_hours` parameter.
-        ```
         """
-        # TODO use expire, not auto_purge (at least for redis)
         end_time = (
             time() - self.app.orchestrator.conf.auto_final_invocation_purge_hours * 3600
         )
@@ -604,51 +535,24 @@ class RedisOrchestrator(BaseOrchestrator):
                 invocation = self.app.state_backend.get_invocation(invocation_id)
                 task_id = invocation.task.task_id
                 # clean up task keys
-                self.client.srem(self.key.task(task_id), invocation_id)
-                if not self.client.smembers(self.key.task(task_id)):
-                    self.client.delete(self.key.task(task_id))
+                self.client.srem(self.key.task(task_id.key), invocation_id)
+                if not self.client.smembers(self.key.task(task_id.key)):
+                    self.client.delete(self.key.task(task_id.key))
                 # clean up task-status keys
-                status = self.get_status(invocation_id)
-                self.client.srem(self.key.status_to_invocations(status), invocation_id)
+                status_record = self.get_invocation_status_record(invocation_id)
+                self.client.srem(
+                    self.key.status_to_invocations(status_record.status), invocation_id
+                )
                 if not self.client.smembers(
-                    self.key.status_to_invocations(invocation.status)
+                    self.key.status_to_invocations(status_record.status)
                 ):
                     self.client.delete(
-                        self.key.status_to_invocations(invocation.status)
+                        self.key.status_to_invocations(status_record.status)
                     )
             except KeyError:
                 self.app.logger.warning(f"{invocation_id=} not found during auto purge")
             self.client.delete(self.key.invocation_to_status(invocation_id))
             self.client.zrem(self.key.invocation_auto_purge(), invocation_id)
-            self.client.delete(self.key.pending_timer(invocation_id))
-            self.client.delete(self.key.previous_status(invocation_id))
-
-    def get_invocation_status(self, invocation_id: str) -> "InvocationStatus":
-        """
-        Retrieves the status of a specific invocation id.
-
-        :param invocation_id: The id of the invocation whose status is to be retrieved.
-        :return: The current status of the invocation.
-        """
-        status = self.get_status(invocation_id)
-        if status == InvocationStatus.PENDING:
-            pending_timer_key = self.key.pending_timer(invocation_id)
-            encoded_pending_timer = self.client.get(pending_timer_key)
-            if encoded_pending_timer:
-                elapsed = time() - float(encoded_pending_timer.decode())
-                if elapsed > self.app.conf.max_pending_seconds:
-                    prev_status_key = self.key.previous_status(invocation_id)
-                    encoded_previous_status = self.client.get(prev_status_key)
-                    if encoded_previous_status:
-                        previous_status = InvocationStatus(
-                            encoded_previous_status.decode()
-                        )
-                        self._set_invocation_status(invocation_id, previous_status)
-                        self.app.logger.debug(
-                            f"Synchronous resolved PENDING status for {invocation_id} to {previous_status}"
-                        )
-                        return previous_status
-        return status
 
     def increment_invocation_retries(self, invocation_id: str) -> None:
         """
@@ -672,8 +576,10 @@ class RedisOrchestrator(BaseOrchestrator):
         return 0
 
     def filter_by_status(
-        self, invocation_ids: list[str], status_filter: set["InvocationStatus"]
-    ) -> list[str]:
+        self,
+        invocation_ids: list["InvocationId"],
+        status_filter: frozenset["InvocationStatus"],
+    ) -> list["InvocationId"]:
         """
         Filters a list of invocation ids by their status in an optimized way.
 
@@ -689,20 +595,227 @@ class RedisOrchestrator(BaseOrchestrator):
             status_results = pipe.execute()
         filtered = []
         for i, inv_id in enumerate(invocation_ids):
-            status_bytes = status_results[i]
-            if not status_bytes:
+            status_json = status_results[i]
+            if not status_json:
                 continue
-            status = InvocationStatus(status_bytes.decode())
-            if status in status_filter:
+            status_dict = json.loads(status_json.decode())
+            status_record = InvocationStatusRecord.from_json(status_dict)
+            if status_record.status in status_filter:
                 filtered.append(inv_id)
         return filtered
+
+    def register_runner_heartbeats(
+        self, runner_ids: list[str], can_run_atomic_service: bool = False
+    ) -> None:
+        """
+        Register or update runners' heartbeat timestamp and atomic service eligibility.
+
+        :param runner_ids: List of runner IDs
+        :param can_run_atomic_service: Whether runners are eligible for atomic service
+        """
+        current_time = time()
+        pipeline = self.client.pipeline(transaction=True)
+
+        for runner_id in runner_ids:
+            runner_key = self.key.runner_heartbeat(runner_id)
+
+            # Add to sorted set only if doesn't exist (NX flag preserves creation order)
+            pipeline.zadd(
+                self.key.runner_heartbeats(), {runner_id: current_time}, nx=True
+            )
+
+            # Always update the hash - use HSET with multiple fields
+            # If key doesn't exist, this creates it with all fields
+            # If key exists, this only updates the fields we specify
+            pipeline.hsetnx(runner_key, "creation_timestamp", current_time)
+            pipeline.hset(
+                runner_key,
+                mapping={
+                    "last_heartbeat": current_time,
+                    "can_run_atomic_service": int(can_run_atomic_service),
+                },
+            )
+
+        pipeline.execute()
+
+    def record_atomic_service_execution(
+        self, runner_id: str, start_time: datetime, end_time: datetime
+    ) -> None:
+        """
+        Record the latest atomic service execution window for a runner.
+
+        Replaces any previous execution record for this runner with the current one.
+        Used for diagnostics and detecting potential collisions.
+
+        :param str runner_id: The runner that executed the service
+        :param datetime start_time: When execution started (UTC timezone-aware)
+        :param datetime end_time: When execution ended (UTC timezone-aware)
+        """
+        runner_key = self.key.runner_heartbeat(runner_id)
+
+        self.client.hset(
+            runner_key,
+            mapping={
+                "last_service_start": start_time.timestamp(),
+                "last_service_end": end_time.timestamp(),
+            },
+        )
+
+    def _get_runner_heartbeat_data(self) -> list[tuple[str, dict[bytes, bytes]]]:
+        """
+        Fetch all runner IDs with their heartbeat hash data.
+
+        :return: List of (runner_id, hash_data) tuples for all registered runners.
+        """
+        all_runner_ids = self.client.zrange(self.key.runner_heartbeats(), 0, -1)
+        if not all_runner_ids:
+            return []
+
+        pipeline = self.client.pipeline(transaction=False)
+        for runner_id_bytes in all_runner_ids:
+            runner_id = runner_id_bytes.decode()
+            pipeline.hgetall(self.key.runner_heartbeat(runner_id))
+
+        return [
+            (runner_id_bytes.decode(), data)
+            for runner_id_bytes, data in zip(
+                all_runner_ids, pipeline.execute(), strict=True
+            )
+        ]
+
+    def _is_runner_active(self, runner_data: dict[bytes, bytes], cutoff: float) -> bool:
+        """Check if a runner is active based on its last heartbeat."""
+        if not runner_data or b"last_heartbeat" not in runner_data:
+            return False
+        try:
+            return float(runner_data[b"last_heartbeat"].decode()) >= cutoff
+        except (ValueError, TypeError):
+            return False
+
+    def _get_active_runners(
+        self, timeout_seconds: float, can_run_atomic_service: bool | None
+    ) -> list["ActiveRunnerInfo"]:
+        """
+        Retrieve runners that are considered active based on heartbeat activity.
+
+        A runner is considered "active" if it has sent a heartbeat within the timeout period.
+        This is used for atomic service scheduling to determine which runners are eligible
+        to participate in time slot distribution.
+
+        :param float timeout_seconds: Heartbeat timeout in seconds (typically from atomic_service_runner_considered_dead_after_minutes config)
+        :param bool | None can_run_atomic_service: If specified, filters runners based on their eligibility to run atomic services
+        :return: List of active runners ordered by creation time (oldest first)
+        :rtype: list["ActiveRunnerInfo"]
+        """
+        cutoff_time = time() - timeout_seconds
+        active_runners = []
+
+        for runner_id, runner_data in self._get_runner_heartbeat_data():
+            if not self._is_runner_active(runner_data, cutoff_time):
+                continue
+            can_run_atomic = bool(int(runner_data[b"can_run_atomic_service"].decode()))
+            if (
+                can_run_atomic_service is not None
+                and can_run_atomic != can_run_atomic_service
+            ):
+                continue
+
+            try:
+                last_heartbeat = float(runner_data[b"last_heartbeat"].decode())
+
+                # Optional service execution timestamps
+                last_service_start = (
+                    datetime.fromtimestamp(
+                        float(runner_data[b"last_service_start"].decode()), tz=UTC
+                    )
+                    if b"last_service_start" in runner_data
+                    else None
+                )
+                last_service_end = (
+                    datetime.fromtimestamp(
+                        float(runner_data[b"last_service_end"].decode()), tz=UTC
+                    )
+                    if b"last_service_end" in runner_data
+                    else None
+                )
+
+                active_runners.append(
+                    ActiveRunnerInfo(
+                        runner_id=runner_id,
+                        creation_time=datetime.fromtimestamp(
+                            float(runner_data[b"creation_timestamp"].decode()), tz=UTC
+                        ),
+                        allow_to_run_atomic_service=can_run_atomic,
+                        last_heartbeat=datetime.fromtimestamp(last_heartbeat, tz=UTC),
+                        last_service_start=last_service_start,
+                        last_service_end=last_service_end,
+                    )
+                )
+            except (ValueError, KeyError):
+                continue
+
+        return active_runners
+
+    def get_pending_invocations_for_recovery(self) -> Iterator["InvocationId"]:
+        """Retrieve invocation IDs stuck in PENDING status beyond the allowed time."""
+        max_pending_seconds = self.app.conf.max_pending_seconds
+        current_time = datetime.now(UTC)
+        cutoff_timestamp = current_time.timestamp() - max_pending_seconds
+
+        # Get all PENDING invocations
+        pending_invocations = self.client.smembers(
+            self.key.status_to_invocations(InvocationStatus.PENDING)
+        )
+
+        for invocation_id_bytes in pending_invocations:
+            invocation_id = invocation_id_bytes.decode()
+            try:
+                status_record = self.get_invocation_status_record(invocation_id)
+                if status_record.timestamp.timestamp() <= cutoff_timestamp:
+                    yield invocation_id
+            except KeyError:
+                # Invocation no longer exists
+                continue
+
+    def _get_running_invocations_for_recovery(
+        self, timeout_seconds: float
+    ) -> Iterator["InvocationId"]:
+        """
+        Retrieve invocation IDs in RUNNING status owned by inactive runners.
+
+        An inactive runner is one that hasn't sent a heartbeat within the
+        configured timeout period. Invocations owned by such runners are
+        considered stuck and need recovery.
+
+        :param float timeout_seconds: Heartbeat timeout in seconds
+        :return: Iterator of invocation IDs that need recovery.
+        :rtype: Iterator[str]
+        """
+        cutoff_time = time() - timeout_seconds
+
+        # Build set of active runner IDs
+        active_runner_ids = {
+            runner_id
+            for runner_id, data in self._get_runner_heartbeat_data()
+            if self._is_runner_active(data, cutoff_time)
+        }
+
+        # Check RUNNING invocations for orphaned owners
+        for inv_id_bytes in self.client.smembers(
+            self.key.status_to_invocations(InvocationStatus.RUNNING)
+        ):
+            invocation_id = InvocationId(inv_id_bytes.decode())
+            try:
+                status_record = self.get_invocation_status_record(invocation_id)
+                if (
+                    status_record.runner_id
+                    and status_record.runner_id not in active_runner_ids
+                ):
+                    yield invocation_id
+            except KeyError:
+                continue
 
     def purge(self) -> None:
         """Remove all invocations from the orchestrator"""
         self.key.purge(self.client)
-        self.cycle_control.purge()
         self.blocking_control.purge()
-
-    def __del__(self) -> None:
-        if hasattr(self, "_executor") and self._executor:
-            self._executor.shutdown(wait=False)

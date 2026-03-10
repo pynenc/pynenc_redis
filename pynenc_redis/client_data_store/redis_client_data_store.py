@@ -2,9 +2,9 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import redis
-from pynenc.arg_cache.base_arg_cache import BaseArgCache
+from pynenc.client_data_store.base_client_data_store import BaseClientDataStore
 
-from pynenc_redis.conf.config_arg_cache import ConfigArgCacheRedis
+from pynenc_redis.conf.config_client_data_store import ConfigClientDataStoreRedis
 from pynenc_redis.util.mongo_client import get_redis_client
 from pynenc_redis.util.redis_keys import Key
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from pynenc.app import Pynenc
 
 
-class RedisArgCache(BaseArgCache):
+class RedisClientDataStore(BaseClientDataStore):
     """
     Redis-based implementation of argument caching.
 
@@ -23,7 +23,7 @@ class RedisArgCache(BaseArgCache):
     def __init__(self, app: "Pynenc") -> None:
         super().__init__(app)
         self._client: redis.Redis | None = None
-        self.key = Key(app.app_id, "arg_cache")
+        self.key = Key(app.app_id, "client_data_store")
 
     @property
     def client(self) -> redis.Redis:
@@ -33,9 +33,9 @@ class RedisArgCache(BaseArgCache):
         return self._client
 
     @cached_property
-    def conf(self) -> ConfigArgCacheRedis:
+    def conf(self) -> ConfigClientDataStoreRedis:
         """Get Redis-specific configuration."""
-        return ConfigArgCacheRedis(
+        return ConfigClientDataStoreRedis(
             config_values=self.app.config_values,
             config_filepath=self.app.config_filepath,
         )
@@ -47,7 +47,7 @@ class RedisArgCache(BaseArgCache):
         :param str key: The cache key
         :param str value: The serialized value to cache
         """
-        self.client.set(self.key.arg_cache(key), value)
+        self.client.set(self.key.client_data_store(key), value)
 
     def _retrieve(self, key: str) -> str:
         """
@@ -57,7 +57,7 @@ class RedisArgCache(BaseArgCache):
         :return: The cached serialized value
         :raises KeyError: If key not found in cache
         """
-        if value := self.client.get(self.key.arg_cache(key)):
+        if value := self.client.get(self.key.client_data_store(key)):
             return value.decode()
         raise KeyError(f"Cache key not found: {key}")
 

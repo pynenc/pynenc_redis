@@ -1,9 +1,9 @@
 from functools import cached_property
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import redis
 from pynenc.broker.base_broker import BaseBroker
-from pynenc.invocation.dist_invocation import DistributedInvocation
+from pynenc.identifiers.invocation_id import InvocationId
 
 from pynenc_redis.conf.config_broker import ConfigBrokerRedis
 from pynenc_redis.util.mongo_client import get_redis_client
@@ -45,51 +45,31 @@ class RedisBroker(BaseBroker):
             config_filepath=self.app.config_filepath,
         )
 
-    def route_invocation(self, invocation: "DistributedInvocation") -> None:
-        """
-        Route an invocation by sending it to the Redis queue.
+    def route_invocation(self, invocation_id: "InvocationId") -> None:
+        """Route an invocation by sending it to the Redis queue."""
+        self.client.rpush(self.key.default_queue(), invocation_id)
+        self.app.logger.debug(f"Routed invocation {invocation_id} to Redis queue")
 
-        This method serializes the DistributedInvocation object to JSON
-        and sends it to the Redis queue for processing using the `send_message` method.
-
-        :param DistributedInvocation invocation: The invocation to be queued.
-        """
-        self.client.rpush(self.key.default_queue(), invocation.to_json())
-        self.app.logger.debug(
-            f"Routed invocation {invocation.invocation_id} to Redis queue"
-        )
-
-    def route_invocations(self, invocations: list[DistributedInvocation]) -> None:
-        """
-        Routes multiple invocations at once using Redis pipeline for better performance.
-
-        :param list[DistributedInvocation] invocations: The invocations to be routed.
-        """
-        if not invocations:
+    def route_invocations(self, invocation_ids: list["InvocationId"]) -> None:
+        """Routes multiple invocations at once using Redis pipeline for better performance."""
+        if not invocation_ids:
             return
 
-        messages = [invocation.to_json() for invocation in invocations]
         with self.client.pipeline() as pipe:
-            for message in messages:
-                pipe.rpush(self.key.default_queue(), message)
+            for invocation_id in invocation_ids:
+                pipe.rpush(self.key.default_queue(), invocation_id)
             pipe.execute()
-        self.app.logger.debug(f"Routed {len(invocations)} invocations to Redis queue")
+        self.app.logger.debug(
+            f"Routed {len(invocation_ids)} invocations to Redis queue"
+        )
 
-    def retrieve_invocation(self) -> Optional["DistributedInvocation"]:
-        """
-        Retrieve the next invocation from the Redis queue.
-
-        This method receives a message from the Redis queue using the `receive_message` method.
-        If a message is received, it deserializes the JSON string back into a DistributedInvocation object.
-
-        :return: The next invocation from the queue, or None if the queue is empty.
-        """
-        self.app.logger.debug("Retrieving invocation from Redis queue")
+    def retrieve_invocation(self) -> "InvocationId | None":
+        """Retrieve the next invocation from the Redis queue."""
         if msg := self.client.blpop(
             self.key.default_queue(), timeout=self.app.broker.conf.queue_timeout_sec
         ):
             # blpop returns tuple of (key, value)
-            return DistributedInvocation.from_json(self.app, msg[1].decode())
+            return InvocationId(msg[1].decode())
         return None
 
     def count_invocations(self) -> int:

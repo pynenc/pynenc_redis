@@ -1,82 +1,114 @@
-# Welcome to Pynenc's Documentation!
+:::{image} \_static/logo.png
+:alt: Pynenc
+:align: center
+:height: 90px
+:class: hero-logo
+:::
 
-**Pynenc: A task management system for complex distributed orchestration.**
+# Pynenc Redis Plugin
 
-## Introduction
+**Full-stack Redis backend for [Pynenc](https://pynenc.readthedocs.io/) distributed task orchestration.**
 
-Pynenc is a task management tool designed for orchestration in distributed Python environments. It simplifies the orchestration of tasks with an emphasis on user-friendly configuration and efficient execution.
-
-```{toctree}
-:hidden:
-:maxdepth: 2
-:caption: Table of Contents
-
-overview
-getting_started/index
-usage_guide/index
-configuration/index
-cli/index
-apidocs/index.rst
-contributing/index
-faq
-changelog
-license
-```
-
-## Key Features
-
-- Intuitive Orchestration
-- Configurable Concurrency Management
-- Workflow System for Complex Task Orchestration with Deterministic Execution
-- Trigger System for Event-Driven and Scheduled Tasks
-- Automatic Task Prioritization
-- Automatic Task Pausing
-- Cycle Detection
-- Modularity and Extensibility
-- Flexible Configuration Builder
-
-For more details on these features, refer to the {doc}`usage_guide/index`.
-
-## Installation
-
-Pynenc can be easily installed using pip:
+The `pynenc-redis` plugin provides all five Pynenc components running on Redis.
+Install it alongside Pynenc and it registers itself automatically via Python entry points.
 
 ```bash
-pip install pynenc
+pip install pynenc-redis
 ```
 
-Refer to the {doc}`getting_started/index` section for more detailed installation instructions.
+## Components at a Glance
+
+| Component             | Class                  | Role                                                  |
+| --------------------- | ---------------------- | ----------------------------------------------------- |
+| **Orchestrator**      | `RedisOrchestrator`    | Distributed status tracking & blocking control        |
+| **Broker**            | `RedisBroker`          | FIFO message queue via Redis lists with blocking pop  |
+| **State Backend**     | `RedisStateBackend`    | Persistent state, results, exceptions & workflow data |
+| **Client Data Store** | `RedisClientDataStore` | Argument caching for large serialized payloads        |
+| **Trigger**           | `RedisTrigger`         | Event-driven & cron-based task scheduling             |
+
+---
 
 ## Quick Start
 
-Define your first task:
-
 ```python
-from pynenc import Pynenc
+from pynenc import PynencBuilder
 
-app = Pynenc()
+app = (
+    PynencBuilder()
+    .app_id("my_app")
+    .redis(url="redis://localhost:6379")  # all components on Redis
+    .process_runner()
+    .build()
+)
 
 @app.task
 def add(x: int, y: int) -> int:
     return x + y
 ```
 
-And get the result (requires a distributed runner, redis or dev mode):
+`.redis()` registers every component at once. See {doc}`installation` for
+environment-variable and Docker Compose alternatives.
 
-```python
-result = add(1, 2).result
+---
+
+::::{grid} 1 2 3 3
+:gutter: 3
+:padding: 0
+
+:::{grid-item-card} 🚀 Installation & Quick Start
+:link: installation
+:link-type: doc
+:shadow: sm
+
+Get up and running with `PynencBuilder`, environment variables, and Docker Compose examples.
+:::
+
+:::{grid-item-card} ⚙️ Configuration Reference
+:link: configuration
+:link-type: doc
+:shadow: sm
+
+All connection, pool, orchestrator, state backend, and trigger settings — with types, defaults, and descriptions.
+:::
+
+:::{grid-item-card} 🏗️ Architecture
+:link: architecture
+:link-type: doc
+:shadow: sm
+
+How the plugin uses Redis: connection pooling, key naming convention, atomic operations, and data structure choices.
+:::
+::::
+
+---
+
+Part of the **[Pynenc](https://pynenc.readthedocs.io/) ecosystem** ·
+[MongoDB Plugin](https://pynenc-mongodb.readthedocs.io/) ·
+[RabbitMQ Plugin](https://pynenc-rabbitmq.readthedocs.io/)
+
+```{toctree}
+:hidden:
+:maxdepth: 2
+:caption: Redis Plugin
+
+installation
+configuration
+architecture
 ```
 
-Get started quickly with a basic example in the {doc}`getting_started/index` section.
+```{toctree}
+:hidden:
+:maxdepth: 2
+:caption: API Reference
 
-## Requirements
+apidocs/index.rst
+```
 
-Pynenc currently requires Redis for distributed task management. Future updates will expand its compatibility with other databases and message queues.
+```{toctree}
+:hidden:
+:caption: Pynenc Ecosystem
 
-## Contact or Support
-
-Need help or want to discuss Pynenc? Check out our [GitHub Issues](https://github.com/pynenc/pynenc/issues) and [GitHub Discussions](https://github.com/pynenc/pynenc/discussions).
-
-## License
-
-Pynenc is released under the MIT License. For more information, see {doc}`license`.
+Pynenc Docs <https://pynenc.readthedocs.io/>
+MongoDB Plugin <https://pynenc-mongodb.readthedocs.io/>
+RabbitMQ Plugin <https://pynenc-rabbitmq.readthedocs.io/>
+```

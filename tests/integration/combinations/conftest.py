@@ -95,7 +95,8 @@ def app_combination_instance(
 
     # Set additional environment variables for subprocess components
     monkeypatch.setenv(
-        "PYNENC__ARG_CACHE_CLS", app_instance.arg_cache.__class__.__name__
+        "PYNENC__CLIENT_DATA_STORE_CLS",
+        app_instance.client_data_store.__class__.__name__,
     )
     monkeypatch.setenv(
         "PYNENC__ORCHESTRATOR_CLS", app_instance.orchestrator.__class__.__name__

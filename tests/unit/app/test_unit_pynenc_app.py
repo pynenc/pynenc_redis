@@ -1,1 +1,1 @@
-from pynenc_tests.unit.app.test_app_all_instances import *
+from pynenc_tests.unit.app.all_tests import *

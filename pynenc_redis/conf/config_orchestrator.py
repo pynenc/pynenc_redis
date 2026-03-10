@@ -16,11 +16,6 @@ class ConfigOrchestratorRedis(ConfigOrchestrator, ConfigRedis):
         exhaustion while still allowing enough parallelism to handle many pending
         invocations. Default is 50 threads.
 
-    :cvar ConfigField[int] redis_retry_max_attempts:
-        Maximum number of retry attempts for Redis operations that encounter specific
-        exceptions such as StatusNotFound. After this many failed attempts, the
-        operation will raise the exception. Default is 3 attempts.
-
     :cvar ConfigField[float] redis_retry_base_delay_sec:
         Base delay in seconds between retry attempts. The retry system uses
         exponential backoff, where each retry waits progressively longer
@@ -33,6 +28,5 @@ class ConfigOrchestratorRedis(ConfigOrchestrator, ConfigRedis):
     """
 
     max_pending_resolution_threads = ConfigField(50)
-    redis_retry_max_attempts = ConfigField(3)
     redis_retry_base_delay_sec = ConfigField(0.1)
     redis_retry_max_delay_sec = ConfigField(1.0)

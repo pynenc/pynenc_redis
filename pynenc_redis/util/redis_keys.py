@@ -108,8 +108,18 @@ class Key:
     def not_waiting(self) -> str:
         return f"{self.prefix}not_waiting"
 
+    def runner_heartbeat(self, runner_id: str) -> str:
+        return f"{self.prefix}runner_heartbeat:{runner_id}"
+
+    def runner_heartbeats(self) -> str:
+        return f"{self.prefix}runner_heartbeats"
+
     def history(self, invocation_id: str) -> str:
         return f"{self.prefix}history:{invocation_id}"
+
+    def history_by_timestamp(self) -> str:
+        """Get key for sorted set of all history entries indexed by timestamp."""
+        return f"{self.prefix}history_by_timestamp"
 
     def result(self, invocation_id: str) -> str:
         return f"{self.prefix}result:{invocation_id}"
@@ -120,11 +130,19 @@ class Key:
     def invocation_auto_purge(self) -> str:
         return f"{self.prefix}invocation_auto_purge"
 
+    def all_invocations_by_time(self) -> str:
+        """Get key for sorted set of all invocation IDs indexed by registration time."""
+        return f"{self.prefix}all_invocations_by_time"
+
+    def task_invocations_by_time(self, task_id: str) -> str:
+        """Get key for sorted set of invocation IDs for a task indexed by registration time."""
+        return f"{self.prefix}task_invocations_by_time:{task_id}"
+
     def default_queue(self) -> str:
         return f"{self.prefix}default_queue"
 
-    def arg_cache(self, key: str) -> str:
-        return f"{self.prefix}arg_key:{key}"
+    def client_data_store(self, key: str) -> str:
+        return f"{self.prefix}client_data_store:{key}"
 
     def purge(self, client: redis.Redis) -> None:
         """
@@ -253,6 +271,15 @@ class Key:
         """
         return f"{self.prefix}workflow:{workflow_id}:det:{key}"
 
+    def runner_context(self, runner_id: str) -> str:
+        """
+        Get key for storing a runner context.
+
+        :param runner_id: The runner's unique identifier
+        :return: Redis key for the runner context
+        """
+        return f"{self.prefix}runner_context:{runner_id}"
+
     def workflow_sub_invocations(self, workflow_id: str) -> str:
         """
         Get key for storing sub-invocation IDs that run inside a workflow.
@@ -263,6 +290,33 @@ class Key:
         :return: Redis key for workflow sub-invocations set
         """
         return f"{self.prefix}workflow:{workflow_id}:sub_invocations"
+
+    def parent_invocation_children(self, parent_invocation_id: str) -> str:
+        """
+        Get key for storing child invocation IDs spawned by a parent invocation.
+
+        :param parent_invocation_id: The parent invocation ID
+        :return: Redis key for parent's child invocations set
+        """
+        return f"{self.prefix}parent_invocation_children:{parent_invocation_id}"
+
+    def workflow_invocations(self, workflow_id: str) -> str:
+        """
+        Get key for storing invocation IDs that belong to a specific workflow.
+
+        :param workflow_id: ID of the workflow
+        :return: Redis key for workflow invocations set
+        """
+        return f"{self.prefix}workflow:invocations:{workflow_id}"
+
+    def workflow_type_invocations(self, workflow_type_key: str) -> str:
+        """
+        Get key for storing invocation IDs grouped by workflow type.
+
+        :param workflow_type_key: The workflow type key (task_id key)
+        :return: Redis key for workflow type invocations set
+        """
+        return f"{self.prefix}workflow:type_invocations:{workflow_type_key}"
 
     @staticmethod
     def all_apps_info_key(app_id: str) -> str:

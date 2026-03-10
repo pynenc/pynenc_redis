@@ -1,1 +1,1 @@
-from pynenc_tests.unit.state_backend.test_state_backend_all_instances import *
+from pynenc_tests.unit.state_backend.all_tests import *

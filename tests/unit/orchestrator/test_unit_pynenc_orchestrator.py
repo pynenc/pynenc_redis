@@ -1,4 +1,1 @@
-from pynenc_tests.unit.orchestrator.test_all_orchestrator_instances import *
-from pynenc_tests.unit.orchestrator.test_blocking_control_all_instances import *
-from pynenc_tests.unit.orchestrator.test_cycle_control_all_instances import *
-from pynenc_tests.unit.orchestrator.test_running_concurrency_all_instances import *
+from pynenc_tests.unit.orchestrator.all_tests import *
