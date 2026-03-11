@@ -999,8 +999,8 @@ wheels = [
 
 [[package]]
 name = "pynenc"
-version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.1rc106.dev179"
+source = { registry = "https://test.pypi.org/simple/" }
 dependencies = [
     { name = "cistell" },
     { name = "croniter" },
@@ -1008,9 +1008,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/1c/2236152cf987e9d98d90a126fb1cebe26415bd9aa0aed9a9981d36cf17d0/pynenc-0.1.0.tar.gz", hash = "sha256:afaacf111ed962baf4db3b9e3d6640934cef2fa741d313388a8b37c68fc74c7a", size = 1167732, upload-time = "2026-03-09T22:44:03.968Z" }
+sdist = { url = "https://test-files.pythonhosted.org/packages/8a/34/73a53e387ad91a110b05a7a964a82e64e99ac0f406138f06bcf22c762ca6/pynenc-0.1.1rc106.dev179.tar.gz", hash = "sha256:94f13eec9f2ce62d67ebd77a8558fea7db5bd223cfc6036cfbeec69482569ef3", size = 1168110, upload-time = "2026-03-11T20:43:17.8Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/22/5053bb4dc1104af8e4653db1838779c088947c16bc2d56893955669e48f7/pynenc-0.1.0-py3-none-any.whl", hash = "sha256:c521284d56d8854d278be9dcc0399ee1f9dc2e1c6c793e095168d331082cf920", size = 971440, upload-time = "2026-03-09T22:44:02.528Z" },
+    { url = "https://test-files.pythonhosted.org/packages/f9/9b/861d8974e886e1af107d1ef4024260f48638afa61225e1461a22cbacd531/pynenc-0.1.1rc106.dev179-py3-none-any.whl", hash = "sha256:b9be19a80a6612246226adfbead1b42d89575193870ba596ea14426b12d72c1a", size = 970000, upload-time = "2026-03-11T20:43:15.89Z" },
 ]
 
 [package.optional-dependencies]
@@ -1076,7 +1076,7 @@ tests = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pynenc", specifier = ">=0.1.0" },
+    { name = "pynenc", specifier = "==0.1.1rc106.dev179", index = "https://test.pypi.org/simple/" },
     { name = "redis", specifier = ">=4.6.0" },
 ]
 
@@ -1104,8 +1104,8 @@ docs = [
     { name = "sphinx-design", specifier = ">=0.6.0" },
     { name = "sphinx-inline-tabs", specifier = ">=2023.4.21" },
 ]
-monitor = [{ name = "pynenc", extras = ["monitor"], specifier = ">=0.1.0" }]
-tests = [{ name = "pynenc", extras = ["tests"], specifier = ">=0.1.0" }]
+monitor = [{ name = "pynenc", extras = ["monitor"], specifier = "==0.1.1rc106.dev179", index = "https://test.pypi.org/simple/" }]
+tests = [{ name = "pynenc", extras = ["tests"], specifier = "==0.1.1rc106.dev179", index = "https://test.pypi.org/simple/" }]
 
 [[package]]
 name = "pytest"
