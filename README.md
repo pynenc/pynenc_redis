@@ -76,6 +76,8 @@ result = add(1, 2).result  # 3
 pynenc --app=tasks.app runner start
 ```
 
+For a complete working example with Docker Compose and multiple workers, see the [basic_redis_example](https://github.com/pynenc/samples/tree/main/basic_redis_example) in the pynenc samples repository.
+
 ## Configuration
 
 ### Builder Parameters
