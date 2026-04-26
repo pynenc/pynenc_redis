@@ -16,18 +16,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc==0.1.1rc106.dev179",
+    "pynenc>=0.1.1",
     "redis>=4.6.0"
 ]
-
-[[tool.uv.index]]
-name = "testpypi"
-url = "https://test.pypi.org/simple/"
-publish-url = "https://test.pypi.org/legacy/"
-explicit = true
-
-[tool.uv.sources]
-pynenc = { index = "testpypi" }
 
 
 [project.urls]
@@ -59,10 +50,10 @@ dev = [
     "testcontainers[redis]>=4.13.0",
 ]
 tests = [
-    "pynenc[tests]==0.1.1rc106.dev179",
+    "pynenc[tests]==0.1.1",
 ]
 monitor = [
-    "pynenc[monitor]==0.1.1rc106.dev179",
+    "pynenc[monitor]==0.1.1",
 ]
 docs = [
     "sphinx>=8.0,<9",
