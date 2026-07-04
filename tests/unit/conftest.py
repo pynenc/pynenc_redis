@@ -5,6 +5,11 @@ import fakeredis
 import pytest
 from pynenc import PynencBuilder
 
+from pynenc_redis.broker import redis_broker
+from pynenc_redis.client_data_store import redis_client_data_store
+from pynenc_redis.orchestrator import redis_orchestrator
+from pynenc_redis.state_backend import redis_state_backend
+from pynenc_redis.trigger import redis_trigger
 from pynenc_redis.util import mongo_client
 
 if TYPE_CHECKING:
@@ -49,6 +54,8 @@ def app_instance() -> "Generator['Pynenc', None, None]":
     :return: Generator yielding a Pynenc app instance with Redis backend
     """
     lock_registry: dict[str, MockLock] = {}
+    fake_redis = fakeredis.FakeRedis()
+    mongo_client._REDIS_POOLS.clear()
 
     def mock_lock_factory(name: str, *args: Any, **kwargs: Any) -> MockLock:
         # Return the same lock instance for the same key to simulate contention
@@ -57,9 +64,14 @@ def app_instance() -> "Generator['Pynenc', None, None]":
         return lock_registry[name]
 
     with (
+        patch.object(mongo_client, "get_redis_client", return_value=fake_redis),
+        patch.object(redis_broker, "get_redis_client", return_value=fake_redis),
         patch.object(
-            mongo_client, "get_redis_client", return_value=fakeredis.FakeRedis()
+            redis_client_data_store, "get_redis_client", return_value=fake_redis
         ),
+        patch.object(redis_orchestrator, "get_redis_client", return_value=fake_redis),
+        patch.object(redis_state_backend, "get_redis_client", return_value=fake_redis),
+        patch.object(redis_trigger, "get_redis_client", return_value=fake_redis),
         patch("redis.ConnectionPool.from_url", lambda *a, **kw: None),
         patch("redis.Redis", fakeredis.FakeRedis),
         patch("redis.lock.Lock", MockLock),
@@ -67,3 +79,4 @@ def app_instance() -> "Generator['Pynenc', None, None]":
     ):
         app = PynencBuilder().redis(url="redis://localhost:6379/0").build()
         yield app  # type: ignore
+    mongo_client._REDIS_POOLS.clear()

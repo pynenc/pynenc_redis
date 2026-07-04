@@ -9,13 +9,19 @@ import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import cached_property
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import redis
 from pynenc.identifiers.task_id import TaskId
 from pynenc.models.trigger_definition_dto import TriggerDefinitionDTO
 from pynenc.trigger.base_trigger import BaseTrigger
 from pynenc.trigger.conditions import CompositeLogic, TriggerCondition, ValidCondition
+from pynenc.trigger.monitoring import (
+    EventMarker,
+    EventMarkerPage,
+    EventRecord,
+    TriggerRunRecord,
+)
 from pynenc.trigger.types import ConditionId
 
 from pynenc_redis.conf.config_trigger import ConfigTriggerRedis
@@ -136,7 +142,7 @@ class RedisTrigger(BaseTrigger):
             trigger.trigger_id,
         )
 
-    def _get_trigger(self, trigger_id: str) -> Optional["TriggerDefinitionDTO"]:
+    def _get_trigger(self, trigger_id: str) -> "TriggerDefinitionDTO | None":
         """
         Get a trigger definition by ID from Redis.
 
@@ -476,3 +482,511 @@ class RedisTrigger(BaseTrigger):
                 pipeline.delete(self.key.trigger(trigger_id.decode()))
         pipeline.delete(task_trigger_key)
         pipeline.execute()
+
+    # ── Monitoring API (events + trigger runs) ─────────────────────────
+    @staticmethod
+    def _ts_score(timestamp: datetime) -> float:
+        """Convert a datetime to an epoch-millisecond score for sorted sets."""
+        return timestamp.timestamp() * 1000.0
+
+    def _event_keys_for(self, event: EventRecord) -> list[str]:
+        """Return the auxiliary index keys associated with one event."""
+        return [
+            self.key.events_by_time(),
+            self.key.events_by_code(event.event_code),
+            self.key.events_matched(),
+            self.key.events_triggered(),
+        ]
+
+    def store_event(self, event: EventRecord) -> None:
+        """Persist or replace one ``EventRecord`` and its indexes."""
+        score = self._ts_score(event.timestamp)
+        payload = event.to_json(self.app)
+        pipe = self.client.pipeline()
+        pipe.set(self.key.event_hash(event.event_id), payload)
+        pipe.zadd(self.key.events_by_time(), {event.event_id: score})
+        pipe.zadd(self.key.events_by_code(event.event_code), {event.event_id: score})
+        pipe.sadd(self.key.events_codes(), event.event_code)
+        if event.matched:
+            pipe.zadd(self.key.events_matched(), {event.event_id: score})
+        else:
+            pipe.zrem(self.key.events_matched(), event.event_id)
+        if event.triggered:
+            pipe.zadd(self.key.events_triggered(), {event.event_id: score})
+        else:
+            pipe.zrem(self.key.events_triggered(), event.event_id)
+        pipe.execute()
+        if event.triggered_invocation_ids:
+            self._seed_event_triggered_invocations(
+                event.event_id, event.triggered_invocation_ids, score
+            )
+
+    def _seed_event_triggered_invocations(
+        self, event_id: str, invocation_ids: Iterable[str], score: float
+    ) -> None:
+        """Seed legacy event->invocation links from an ``EventRecord`` payload."""
+        key = self.key.event_triggered_invocations(event_id)
+        existing = {item.decode() for item in self.client.lrange(key, 0, -1)}
+        new_ids = [inv for inv in invocation_ids if inv not in existing]
+        if not new_ids:
+            return
+        pipe = self.client.pipeline()
+        pipe.rpush(key, *new_ids)
+        pipe.zadd(self.key.events_triggered(), {event_id: score})
+        pipe.execute()
+
+    def get_event(self, event_id: str) -> "EventRecord | None":
+        """Return one stored event or ``None`` if it does not exist."""
+        raw = self.client.get(self.key.event_hash(event_id))
+        if not raw:
+            return None
+        return self._hydrate_event(EventRecord.from_json(raw.decode(), self.app))
+
+    def get_events(
+        self,
+        *,
+        event_code: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        matched: bool | None = None,
+        triggered: bool | None = None,
+        emitted_by_invocation_id: str | None = None,
+        emitted_by_task_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[EventRecord]:
+        """Return events ordered by ``timestamp`` descending after filtering."""
+        candidates = self._select_event_ids(event_code, start_time, end_time)
+        records = self._load_events(candidates)
+        results: list[EventRecord] = []
+        skipped = 0
+        for record in records:
+            if matched is not None and record.matched != matched:
+                continue
+            if triggered is not None and record.triggered != triggered:
+                continue
+            if (
+                emitted_by_invocation_id is not None
+                and record.emitted_by_invocation_id != emitted_by_invocation_id
+            ):
+                continue
+            if (
+                emitted_by_task_id is not None
+                and record.emitted_by_task_id != emitted_by_task_id
+            ):
+                continue
+            if skipped < offset:
+                skipped += 1
+                continue
+            results.append(record)
+            if len(results) >= limit:
+                break
+        return results
+
+    def count_events(
+        self,
+        *,
+        event_code: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        matched: bool | None = None,
+        triggered: bool | None = None,
+        emitted_by_invocation_id: str | None = None,
+        emitted_by_task_id: str | None = None,
+    ) -> int:
+        """Count events matching the same filters as ``get_events``."""
+        candidates = self._select_event_ids(event_code, start_time, end_time)
+        return sum(
+            1
+            for record in self._load_events(candidates)
+            if (matched is None or record.matched == matched)
+            and (triggered is None or record.triggered == triggered)
+            and (
+                emitted_by_invocation_id is None
+                or record.emitted_by_invocation_id == emitted_by_invocation_id
+            )
+            and (
+                emitted_by_task_id is None
+                or record.emitted_by_task_id == emitted_by_task_id
+            )
+        )
+
+    def _load_events(self, event_ids: list[str]) -> list[EventRecord]:
+        """Batch-load events via ``MGET`` preserving the input order."""
+        if not event_ids:
+            return []
+        keys = [self.key.event_hash(eid) for eid in event_ids]
+        raws = self.client.mget(keys)
+        out: list[EventRecord] = []
+        for raw in raws:
+            if raw is None:
+                continue
+            out.append(
+                self._hydrate_event(EventRecord.from_json(raw.decode(), self.app))
+            )
+        return out
+
+    def _hydrate_event(self, record: EventRecord) -> EventRecord:
+        """Attach backend-indexed trigger relations to an event record."""
+        record.triggered_invocation_ids = self.get_invocations_triggered_by_event(
+            record.event_id
+        )
+        return record
+
+    def _select_event_ids(
+        self,
+        event_code: str | None,
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> list[str]:
+        """Run the indexed ``ZRANGEBYSCORE`` query and return event ids desc."""
+        index_key = (
+            self.key.events_by_code(event_code)
+            if event_code is not None
+            else self.key.events_by_time()
+        )
+        min_score: float | str = self._ts_score(start_time) if start_time else "-inf"
+        max_score: float | str = self._ts_score(end_time) if end_time else "+inf"
+        raw = self.client.zrevrangebyscore(index_key, max_score, min_score)
+        return [item.decode() for item in raw]
+
+    def list_event_codes(self) -> list[str]:
+        """Return the sorted list of distinct event codes ever stored."""
+        raw = self.client.smembers(self.key.events_codes())
+        return sorted(item.decode() for item in raw)
+
+    def get_event_markers_in_timerange(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        event_code: str | None = None,
+        state: str = "all",
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> EventMarkerPage:
+        candidates = self._select_event_ids(event_code, start_time, end_time)
+        filtered = [
+            record
+            for record in self._load_events(candidates)
+            if self._marker_matches(record, state)
+        ]
+        total = len(filtered)
+        page = list(reversed(filtered[offset : offset + limit]))
+        return EventMarkerPage(
+            markers=[
+                EventMarker(
+                    event_id=record.event_id,
+                    event_code=record.event_code,
+                    timestamp=record.timestamp,
+                    matched=record.matched,
+                    triggered=record.triggered,
+                    emitted_by_invocation_id=record.emitted_by_invocation_id,
+                    emitted_by_runner_context_id=(record.emitted_by_runner_context_id),
+                )
+                for record in page
+            ],
+            total=total,
+            truncated=offset + len(page) < total,
+        )
+
+    @staticmethod
+    def _marker_matches(record: EventRecord, state: str) -> bool:
+        if state == "matched":
+            return record.matched
+        if state == "unmatched":
+            return not record.matched
+        if state == "triggered":
+            return record.triggered
+        if state == "untriggered":
+            return not record.triggered
+        return True
+
+    def link_trigger_run_to_events(
+        self,
+        event_ids: list[str],
+        invocation_id: str,
+        *,
+        trigger_run_id: str,
+    ) -> None:
+        if not event_ids:
+            return
+        pipe = self.client.pipeline()
+        for event_id in event_ids:
+            key = self.key.event_triggered_invocations(event_id)
+            existing = {item.decode() for item in self.client.lrange(key, 0, -1)}
+            if invocation_id not in existing:
+                pipe.rpush(key, invocation_id)
+            event = self.get_event(event_id)
+            if event is not None:
+                pipe.zadd(
+                    self.key.events_triggered(),
+                    {event_id: self._ts_score(event.timestamp)},
+                )
+            if trigger_run_id:
+                pipe.sadd(self.key.trigger_runs_for_event(event_id), trigger_run_id)
+        pipe.execute()
+
+    def get_invocations_triggered_by_event(self, event_id: str) -> list[str]:
+        raw = self.client.lrange(self.key.event_triggered_invocations(event_id), 0, -1)
+        return [item.decode() for item in raw]
+
+    def store_trigger_run(self, run: TriggerRunRecord) -> None:
+        """Persist or replace one ``TriggerRunRecord`` and its indexes."""
+        sort_time = run.executed_at or run.claimed_at or datetime.now(UTC)
+        score = self._ts_score(sort_time)
+        pipe = self.client.pipeline()
+        pipe.set(self.key.trigger_run_hash(run.trigger_run_id), run.to_json())
+        pipe.zadd(self.key.trigger_runs_by_time(), {run.trigger_run_id: score})
+        for event_id in run.event_ids:
+            pipe.sadd(self.key.trigger_runs_for_event(event_id), run.trigger_run_id)
+        for source_id in run.source_invocation_ids:
+            pipe.sadd(
+                self.key.trigger_runs_sourced_by_invocation(source_id),
+                run.trigger_run_id,
+            )
+        if run.triggered_invocation_id:
+            pipe.sadd(
+                self.key.trigger_runs_for_invocation(run.triggered_invocation_id),
+                run.trigger_run_id,
+            )
+        for valid_condition_id in self._valid_condition_ids_for_run(run):
+            pipe.sadd(
+                self.key.trigger_runs_for_valid_condition(valid_condition_id),
+                run.trigger_run_id,
+            )
+        pipe.execute()
+
+    def get_trigger_run(self, trigger_run_id: str) -> "TriggerRunRecord | None":
+        """Return the stored ``TriggerRunRecord`` or ``None``."""
+        raw = self.client.get(self.key.trigger_run_hash(trigger_run_id))
+        if not raw:
+            return None
+        return TriggerRunRecord.from_json(raw.decode())
+
+    def get_trigger_runs_for_event(self, event_id: str) -> list[TriggerRunRecord]:
+        """Return all trigger runs that reference ``event_id``."""
+        ids = self.client.smembers(self.key.trigger_runs_for_event(event_id))
+        return self._load_runs(ids)
+
+    def get_trigger_runs_for_invocation(
+        self, invocation_id: str
+    ) -> list[TriggerRunRecord]:
+        """Return all trigger runs linked to ``invocation_id``."""
+        ids = self.client.smembers(self.key.trigger_runs_for_invocation(invocation_id))
+        return self._load_runs(ids)
+
+    def get_trigger_runs_sourced_by_invocation(
+        self, invocation_id: str
+    ) -> list[TriggerRunRecord]:
+        """Return trigger runs whose source participant is ``invocation_id``."""
+        ids = self.client.smembers(
+            self.key.trigger_runs_sourced_by_invocation(invocation_id)
+        )
+        return self._load_runs(ids)
+
+    def get_trigger_runs_for_valid_condition(
+        self, valid_condition_id: str
+    ) -> list[TriggerRunRecord]:
+        """Return trigger runs that include ``valid_condition_id``."""
+        ids = self.client.smembers(
+            self.key.trigger_runs_for_valid_condition(valid_condition_id)
+        )
+        runs = self._load_runs(ids)
+        if runs:
+            return runs
+        return super().get_trigger_runs_for_valid_condition(valid_condition_id)
+
+    def get_trigger_runs_in_timerange(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        event_code: str | None = None,
+        task_id_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[TriggerRunRecord]:
+        """Return trigger runs executed between ``start_time`` and ``end_time``."""
+        raw = self.client.zrevrangebyscore(
+            self.key.trigger_runs_by_time(),
+            self._ts_score(end_time),
+            self._ts_score(start_time),
+        )
+        results: list[TriggerRunRecord] = []
+        for item in raw:
+            run = self.get_trigger_run(item.decode())
+            if run is None:
+                continue
+            if task_id_key is not None and run.task_id_key != task_id_key:
+                continue
+            if event_code is not None and not self._run_matches_event_code(
+                run, event_code
+            ):
+                continue
+            results.append(run)
+            if limit is not None and len(results) >= limit:
+                break
+        return results
+
+    def _run_matches_event_code(self, run: TriggerRunRecord, event_code: str) -> bool:
+        """Return ``True`` if any of ``run.event_ids`` has the given code."""
+        for event_id in run.event_ids:
+            event = self.get_event(event_id)
+            if event is not None and event.event_code == event_code:
+                return True
+        return False
+
+    def _load_runs(self, raw_ids: Iterable[object]) -> list[TriggerRunRecord]:
+        """Resolve a collection of raw bytes ids into ``TriggerRunRecord``."""
+        runs: list[TriggerRunRecord] = []
+        for item in raw_ids:
+            run_id = _decode_redis_value(item)
+            run = self.get_trigger_run(run_id)
+            if run is not None:
+                runs.append(run)
+        return runs
+
+    @staticmethod
+    def _valid_condition_ids_for_run(run: TriggerRunRecord) -> set[str]:
+        ids = set(run.valid_condition_ids)
+        for participant in run.participants or []:
+            if participant.valid_condition_id:
+                ids.add(participant.valid_condition_id)
+        return ids
+
+    # ── Auto-purge (events + trigger runs) ─────────────────────────────
+    # The driving algorithm lives in BaseTrigger._auto_purge_events; this
+    # class supplies the Redis primitives.
+
+    def _age_purge_events(self, threshold: datetime) -> list[str]:
+        """Delete events older than ``threshold`` from event indexes."""
+        cutoff = self._ts_score(threshold)
+        ids = self.client.zrangebyscore(self.key.events_by_time(), "-inf", f"({cutoff}")
+        event_ids = [item.decode() for item in ids]
+        self._delete_event_rows(event_ids)
+        return event_ids
+
+    def _cap_purge_events(self) -> list[str]:
+        """Drop oldest events until the total count fits ``event_max_records``."""
+        max_records = self.conf.event_max_records
+        if max_records <= 0:
+            return []
+        total = self.client.zcard(self.key.events_by_time())
+        excess = total - max_records
+        if excess <= 0:
+            return []
+        ids = self.client.zrange(self.key.events_by_time(), 0, excess - 1)
+        event_ids = [item.decode() for item in ids]
+        self._delete_event_rows(event_ids)
+        return event_ids
+
+    def _cascade_delete_runs_for_events(self, event_ids: list[str]) -> int:
+        """Delete trigger runs referencing any of ``event_ids``."""
+        run_ids = self._collect_run_ids_for_events(event_ids)
+        if not run_ids:
+            return 0
+        return self._delete_trigger_runs(run_ids)
+
+    def _delete_event_rows(self, event_ids: list[str]) -> None:
+        """Remove events from indexes/hash storage. Does not cascade runs."""
+        if not event_ids:
+            return
+        records = self._load_events(event_ids)
+        codes_touched = {r.event_code for r in records}
+        pipe = self.client.pipeline()
+        for event_id in event_ids:
+            pipe.delete(self.key.event_hash(event_id))
+            pipe.zrem(self.key.events_by_time(), event_id)
+            pipe.zrem(self.key.events_matched(), event_id)
+            pipe.zrem(self.key.events_triggered(), event_id)
+            pipe.delete(self.key.event_triggered_invocations(event_id))
+        for code in codes_touched:
+            pipe.zrem(self.key.events_by_code(code), *event_ids)
+        pipe.execute()
+        if codes_touched:
+            self._prune_empty_event_codes(codes_touched)
+
+    def _collect_run_ids_for_events(self, event_ids: list[str]) -> list[str]:
+        """Return the trigger-run ids referencing any of ``event_ids``."""
+        pipe = self.client.pipeline()
+        for event_id in event_ids:
+            pipe.smembers(self.key.trigger_runs_for_event(event_id))
+        seen: set[str] = set()
+        for raw_set in pipe.execute():
+            for item in raw_set or []:
+                seen.add(item.decode() if isinstance(item, bytes) else item)
+        return list(seen)
+
+    def _prune_empty_event_codes(self, codes: Iterable[str]) -> None:
+        """Remove codes from ``events_codes`` whose per-code index is empty."""
+        pipe = self.client.pipeline()
+        codes_list = list(codes)
+        for code in codes_list:
+            pipe.zcard(self.key.events_by_code(code))
+        sizes = pipe.execute()
+        empty = [code for code, size in zip(codes_list, sizes, strict=True) if not size]
+        if empty:
+            self.client.srem(self.key.events_codes(), *empty)
+
+    def _age_purge_trigger_runs(self, threshold: datetime) -> int:
+        """Delete trigger runs older than ``threshold``."""
+        cutoff = self._ts_score(threshold)
+        ids = self.client.zrangebyscore(
+            self.key.trigger_runs_by_time(), "-inf", f"({cutoff}"
+        )
+        return self._delete_trigger_runs([item.decode() for item in ids])
+
+    def _cap_purge_trigger_runs(self) -> int:
+        """Drop oldest trigger runs until the count fits ``trigger_run_max_records``."""
+        max_records = self.conf.trigger_run_max_records
+        if max_records <= 0:
+            return 0
+        total = self.client.zcard(self.key.trigger_runs_by_time())
+        excess = total - max_records
+        if excess <= 0:
+            return 0
+        ids = self.client.zrange(self.key.trigger_runs_by_time(), 0, excess - 1)
+        return self._delete_trigger_runs([item.decode() for item in ids])
+
+    def _delete_trigger_runs(self, run_ids: list[str]) -> int:
+        """Remove the given trigger run ids from all indexes and the hash store."""
+        if not run_ids:
+            return 0
+        pipe = self.client.pipeline()
+        for run_id in run_ids:
+            run = self.get_trigger_run(run_id)
+            pipe.delete(self.key.trigger_run_hash(run_id))
+            pipe.zrem(self.key.trigger_runs_by_time(), run_id)
+            if run is None:
+                continue
+            for event_id in run.event_ids:
+                pipe.srem(self.key.trigger_runs_for_event(event_id), run_id)
+            for source_id in run.source_invocation_ids:
+                pipe.srem(
+                    self.key.trigger_runs_sourced_by_invocation(source_id), run_id
+                )
+            if run.triggered_invocation_id:
+                pipe.srem(
+                    self.key.trigger_runs_for_invocation(run.triggered_invocation_id),
+                    run_id,
+                )
+            for valid_condition_id in self._valid_condition_ids_for_run(run):
+                pipe.srem(
+                    self.key.trigger_runs_for_valid_condition(valid_condition_id),
+                    run_id,
+                )
+        pipe.execute()
+        return len(run_ids)
+
+
+def _decode_redis_value(value: object) -> str:
+    """Decode Redis bytes-like values into text keys."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode()
+    if isinstance(value, bytearray):
+        return bytes(value).decode()
+    if isinstance(value, memoryview):
+        return value.tobytes().decode()
+    return str(value)

@@ -9,8 +9,8 @@ from pynenc.exceptions import InvocationNotFoundError
 from pynenc.identifiers.call_id import CallId
 from pynenc.identifiers.invocation_id import InvocationId
 from pynenc.identifiers.task_id import TaskId
-from pynenc.invocation.dist_invocation import InvocationDTO
 from pynenc.models.call_dto import CallDTO
+from pynenc.models.invocation_dto import InvocationDTO
 from pynenc.runner.runner_context import RunnerContext
 from pynenc.state_backend.base_state_backend import BaseStateBackend, InvocationHistory
 from pynenc.workflow import WorkflowIdentity
@@ -24,13 +24,19 @@ if TYPE_CHECKING:
     from pynenc.app import AppInfo, Pynenc
 
 
-def _workflow_identity_from_json(data: dict[str, Any]) -> WorkflowIdentity:
-    """Reconstruct WorkflowIdentity from JSON data."""
+def _workflow_identity_from_json(
+    data: dict[str, Any],
+) -> WorkflowIdentity | None:
+    """Reconstruct WorkflowIdentity from JSON data when present."""
+    workflow_id = data.get("workflow_id")
+    workflow_type_key = data.get("workflow_type_key")
+    if not workflow_id or not workflow_type_key:
+        return None
     return WorkflowIdentity(
-        workflow_id=InvocationId(data["workflow_id"]),
-        workflow_type=TaskId.from_key(data["workflow_type_key"]),
+        workflow_id=InvocationId(workflow_id),
+        workflow_type=TaskId.from_key(workflow_type_key),
         parent_workflow_id=InvocationId(data["parent_workflow_id"])
-        if data["parent_workflow_id"]
+        if data.get("parent_workflow_id")
         else None,
     )
 
@@ -83,9 +89,10 @@ class RedisStateBackend(BaseStateBackend):
                 "arguments_id": call_dto.call_id.args_id,
                 "serialized_arguments": call_dto.serialized_arguments,
                 "parent_invocation_id": inv_dto.parent_invocation_id,
-                "workflow_id": wf.workflow_id,
-                "workflow_type_key": wf.workflow_type.key,
-                "parent_workflow_id": wf.parent_workflow_id,
+                "parent_event_id": inv_dto.parent_event_id,
+                "workflow_id": wf.workflow_id if wf else None,
+                "workflow_type_key": wf.workflow_type.key if wf else None,
+                "parent_workflow_id": wf.parent_workflow_id if wf else None,
             }
             self.client.set(
                 self.key.invocation(inv_dto.invocation_id), json.dumps(invocation_data)
@@ -98,15 +105,22 @@ class RedisStateBackend(BaseStateBackend):
                     inv_dto.invocation_id,
                 )
 
+            if inv_dto.parent_event_id:
+                self.client.sadd(
+                    self.key.parent_event_children(inv_dto.parent_event_id),
+                    inv_dto.invocation_id,
+                )
+
             # Maintain workflow-to-invocations indices
-            self.client.sadd(
-                self.key.workflow_invocations(wf.workflow_id),
-                inv_dto.invocation_id,
-            )
-            self.client.sadd(
-                self.key.workflow_type_invocations(wf.workflow_type.key),
-                inv_dto.invocation_id,
-            )
+            if wf is not None:
+                self.client.sadd(
+                    self.key.workflow_invocations(wf.workflow_id),
+                    inv_dto.invocation_id,
+                )
+                self.client.sadd(
+                    self.key.workflow_type_invocations(wf.workflow_type.key),
+                    inv_dto.invocation_id,
+                )
 
     def _get_invocation(
         self, invocation_id: str
@@ -124,13 +138,7 @@ class RedisStateBackend(BaseStateBackend):
         data = json.loads(inv_data.decode())
 
         call_id = CallId.from_key(data["call_id_key"])
-        workflow = WorkflowIdentity(
-            workflow_id=InvocationId(data["workflow_id"]),
-            workflow_type=TaskId.from_key(data["workflow_type_key"]),
-            parent_workflow_id=InvocationId(data["parent_workflow_id"])
-            if data["parent_workflow_id"]
-            else None,
-        )
+        workflow = _workflow_identity_from_json(data)
 
         inv_dto = InvocationDTO(
             invocation_id=InvocationId(data["invocation_id"]),
@@ -139,6 +147,7 @@ class RedisStateBackend(BaseStateBackend):
             parent_invocation_id=InvocationId(data["parent_invocation_id"])
             if data["parent_invocation_id"]
             else None,
+            parent_event_id=data.get("parent_event_id") or None,
         )
 
         call_dto = CallDTO(
@@ -147,6 +156,13 @@ class RedisStateBackend(BaseStateBackend):
         )
 
         return (inv_dto, call_dto)
+
+    def get_invocations_by_parent_event(
+        self, parent_event_id: str
+    ) -> Iterator["InvocationId"]:
+        """Return IDs of invocations created in response to ``parent_event_id``."""
+        raw_ids = self.client.smembers(self.key.parent_event_children(parent_event_id))
+        return (InvocationId(item.decode()) for item in raw_ids)
 
     def _add_histories(
         self,
