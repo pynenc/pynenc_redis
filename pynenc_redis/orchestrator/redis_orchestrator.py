@@ -1,9 +1,9 @@
 import json
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from time import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import redis
 from pynenc.identifiers.invocation_id import InvocationId
@@ -13,7 +13,11 @@ from pynenc.invocation.status import (
     InvocationStatusRecord,
     status_record_transition,
 )
-from pynenc.orchestrator.atomic_service import ActiveRunnerInfo
+from pynenc.orchestrator.atomic_service import (
+    ActiveRunnerInfo,
+    AtomicServiceExecution,
+    AtomicServiceExecutionStatus,
+)
 from pynenc.orchestrator.base_orchestrator import (
     BaseBlockingControl,
     BaseOrchestrator,
@@ -28,6 +32,7 @@ if TYPE_CHECKING:
     from pynenc.app import Pynenc
     from pynenc.identifiers.call_id import CallId
     from pynenc.invocation.dist_invocation import DistributedInvocation
+    from pynenc.orchestrator.atomic_service import AtomicServiceRun
     from pynenc.task import Task, TaskId
 
 
@@ -638,28 +643,321 @@ class RedisOrchestrator(BaseOrchestrator):
 
         pipeline.execute()
 
-    def record_atomic_service_execution(
-        self, runner_id: str, start_time: datetime, end_time: datetime
+    def record_atomic_service_execution_start(
+        self,
+        atomic_service_run: "AtomicServiceRun",
+        started_at: datetime | None,
+        status: AtomicServiceExecutionStatus = AtomicServiceExecutionStatus.RUNNING,
+        reason: str = "",
+    ) -> bool:
+        """Insert a new atomic-service execution record."""
+        atomic_service_id = atomic_service_run.atomic_service_id
+        execution_id = atomic_service_id.atomic_service_run_id
+        executions_key = self.key.atomic_service_executions()
+        execution_key = self.key.atomic_service_execution(execution_id)
+        if status != AtomicServiceExecutionStatus.RUNNING:
+            actual_started_at = started_at or datetime.now(UTC)
+            atomic_service_run.started_at = actual_started_at
+            start_iso = actual_started_at.isoformat()
+            payload = {
+                "runner_id": atomic_service_id.runner_id,
+                "atomic_service_run_id": execution_id,
+                "start_time": start_iso,
+                "end_time": (
+                    start_iso
+                    if status == AtomicServiceExecutionStatus.BLOCKED
+                    else None
+                ),
+                "status": str(status),
+                "reason": reason,
+            }
+            pipeline = self.client.pipeline(transaction=True)
+            pipeline.set(execution_key, json.dumps(payload))
+            pipeline.zadd(executions_key, {execution_id: actual_started_at.timestamp()})
+            pipeline.execute()
+            self.purge_atomic_service_executions()
+            return status != AtomicServiceExecutionStatus.BLOCKED
+
+        active_key = self.key.atomic_service_active_execution()
+        while True:
+            with self.client.pipeline() as pipe:
+                try:
+                    pipe.watch(active_key)
+                    active_execution_id = cast(bytes | str | None, pipe.get(active_key))
+                    if active_execution_id:
+                        prior_id = self._decode_redis_value(active_execution_id)
+                        if prior_id == execution_id:
+                            pipe.unwatch()
+                            return True
+                        actual_started_at = started_at or datetime.now(UTC)
+                        atomic_service_run.started_at = actual_started_at
+                        start_iso = actual_started_at.isoformat()
+                        blocked_payload = {
+                            "runner_id": atomic_service_id.runner_id,
+                            "atomic_service_run_id": execution_id,
+                            "start_time": start_iso,
+                            "end_time": start_iso,
+                            "status": str(AtomicServiceExecutionStatus.BLOCKED),
+                            "reason": reason or f"prior_running:{prior_id}",
+                        }
+                        pipe.multi()
+                        pipe.set(execution_key, json.dumps(blocked_payload))
+                        pipe.zadd(
+                            executions_key,
+                            {execution_id: actual_started_at.timestamp()},
+                        )
+                        pipe.execute()
+                        self.purge_atomic_service_executions()
+                        return False
+                    actual_started_at = started_at or datetime.now(UTC)
+                    atomic_service_run.started_at = actual_started_at
+                    start_iso = actual_started_at.isoformat()
+                    running_payload = {
+                        "runner_id": atomic_service_id.runner_id,
+                        "atomic_service_run_id": execution_id,
+                        "start_time": start_iso,
+                        "end_time": None,
+                        "status": str(AtomicServiceExecutionStatus.RUNNING),
+                        "reason": reason,
+                    }
+                    pipe.multi()
+                    pipe.set(active_key, execution_id)
+                    pipe.set(execution_key, json.dumps(running_payload))
+                    pipe.zadd(
+                        executions_key,
+                        {execution_id: actual_started_at.timestamp()},
+                    )
+                    pipe.execute()
+                    return True
+                except redis.WatchError:
+                    continue
+
+    def finalize_atomic_service_execution(
+        self,
+        atomic_service_run: "AtomicServiceRun",
+        end_time: datetime,
+        status: AtomicServiceExecutionStatus,
+        reason: str = "",
     ) -> None:
-        """
-        Record the latest atomic service execution window for a runner.
+        """Transition the RUNNING record for this run to a terminal status."""
+        atomic_service_id = atomic_service_run.atomic_service_id
+        execution_id = atomic_service_id.atomic_service_run_id
+        raw_record = self.client.get(self.key.atomic_service_execution(execution_id))
+        end_iso = end_time.isoformat()
+        if raw_record is None:
+            record = {
+                "runner_id": atomic_service_id.runner_id,
+                "atomic_service_run_id": execution_id,
+                "start_time": end_iso,
+                "end_time": end_iso,
+                "status": str(status),
+                "reason": reason,
+            }
+            pipeline = self.client.pipeline(transaction=True)
+            pipeline.set(
+                self.key.atomic_service_execution(execution_id), json.dumps(record)
+            )
+            pipeline.zadd(
+                self.key.atomic_service_executions(),
+                {execution_id: end_time.timestamp()},
+            )
+            pipeline.execute()
+            self._release_atomic_service_active_execution(execution_id)
+            self.purge_atomic_service_executions()
+            return
 
-        Replaces any previous execution record for this runner with the current one.
-        Used for diagnostics and detecting potential collisions.
+        try:
+            record = json.loads(self._decode_redis_value(raw_record))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            atomic_service_id = atomic_service_run.atomic_service_id
+            record = {
+                "runner_id": atomic_service_id.runner_id,
+                "atomic_service_run_id": atomic_service_id.atomic_service_run_id,
+                "start_time": (atomic_service_run.started_at or end_time).isoformat(),
+                "end_time": end_iso,
+                "status": str(status),
+                "reason": reason,
+            }
 
-        :param str runner_id: The runner that executed the service
-        :param datetime start_time: When execution started (UTC timezone-aware)
-        :param datetime end_time: When execution ended (UTC timezone-aware)
-        """
-        runner_key = self.key.runner_heartbeat(runner_id)
+        current_status = record.get("status")
+        if current_status != str(AtomicServiceExecutionStatus.RUNNING):
+            self._release_atomic_service_active_execution(execution_id)
+            return
 
-        self.client.hset(
-            runner_key,
-            mapping={
-                "last_service_start": start_time.timestamp(),
-                "last_service_end": end_time.timestamp(),
-            },
+        record["end_time"] = end_iso
+        record["status"] = str(status)
+        if reason:
+            record["reason"] = reason
+        self.client.set(
+            self.key.atomic_service_execution(execution_id), json.dumps(record)
         )
+        self._release_atomic_service_active_execution(execution_id)
+        self.purge_atomic_service_executions()
+
+    def _release_atomic_service_active_execution(self, execution_id: str) -> None:
+        """Release the active atomic-service marker if this run still owns it."""
+        active_key = self.key.atomic_service_active_execution()
+        while True:
+            with self.client.pipeline() as pipe:
+                try:
+                    pipe.watch(active_key)
+                    active_execution_id = cast(bytes | str | None, pipe.get(active_key))
+                    if (
+                        not active_execution_id
+                        or self._decode_redis_value(active_execution_id) != execution_id
+                    ):
+                        pipe.unwatch()
+                        return
+                    pipe.multi()
+                    pipe.delete(active_key)
+                    pipe.execute()
+                    return
+                except redis.WatchError:
+                    continue
+
+    def get_active_atomic_service_executions(
+        self,
+    ) -> list[AtomicServiceExecution]:
+        """Return RUNNING executions ordered most-recently-started first."""
+        matches: list[AtomicServiceExecution] = []
+        for raw_execution_id in self.client.zrevrange(
+            self.key.atomic_service_executions(), 0, -1
+        ):
+            execution_id = self._decode_redis_value(raw_execution_id)
+            execution = self._load_atomic_service_execution(execution_id)
+            if execution is None:
+                continue
+            if execution.status != AtomicServiceExecutionStatus.RUNNING:
+                continue
+            matches.append(execution)
+        return matches
+
+    def get_atomic_service_executions_in_timerange(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int = 1000,
+        *,
+        runner_id: str | None = None,
+        min_duration_seconds: float = 0.0,
+    ) -> list[AtomicServiceExecution]:
+        """Retrieve atomic service execution windows overlapping a time range."""
+        if limit <= 0:
+            return []
+        matches: list[AtomicServiceExecution] = []
+        raw_execution_ids = self.client.zrevrangebyscore(
+            self.key.atomic_service_executions(), end_time.timestamp(), "-inf"
+        )
+        for raw_execution_id in raw_execution_ids:
+            execution_id = self._decode_redis_value(raw_execution_id)
+            execution = self._load_atomic_service_execution(execution_id)
+            if execution is None:
+                continue
+            if execution.end_time is not None and execution.end_time < start_time:
+                continue
+            if execution.end_time is None and execution.start_time < start_time:
+                continue
+            if runner_id is not None and execution.runner_id != runner_id:
+                continue
+            if (
+                min_duration_seconds > 0.0
+                and execution.duration_seconds < min_duration_seconds
+            ):
+                continue
+            matches.append(execution)
+            if len(matches) >= limit:
+                break
+        return matches
+
+    def purge_atomic_service_executions(self) -> int:
+        """Trim atomic-service execution history by age and capacity."""
+        removed = 0
+        retention_minutes = float(
+            self.app.conf.atomic_service_execution_retention_minutes
+        )
+        max_records = int(self.app.conf.atomic_service_execution_max_records)
+        protected = self.app.trigger.get_referenced_atomic_service_run_ids()
+        executions_key = self.key.atomic_service_executions()
+        if retention_minutes > 0:
+            cutoff = datetime.now(UTC) - timedelta(minutes=retention_minutes)
+            stale_ids: list[str] = []
+            for raw_execution_id in self.client.zrange(executions_key, 0, -1):
+                execution_id = self._decode_redis_value(raw_execution_id)
+                if execution_id in protected:
+                    continue
+                execution = self._load_atomic_service_execution(execution_id)
+                if execution is None:
+                    stale_ids.append(execution_id)
+                    continue
+                if execution.status == AtomicServiceExecutionStatus.RUNNING:
+                    continue
+                if execution.end_time and execution.end_time < cutoff:
+                    stale_ids.append(execution_id)
+            removed += self._delete_atomic_service_executions(stale_ids)
+        if max_records > 0:
+            terminal_ids: list[str] = []
+            for raw_execution_id in self.client.zrange(executions_key, 0, -1):
+                execution_id = self._decode_redis_value(raw_execution_id)
+                if execution_id in protected:
+                    continue
+                execution = self._load_atomic_service_execution(execution_id)
+                if execution is None:
+                    terminal_ids.append(execution_id)
+                    continue
+                if execution.status != AtomicServiceExecutionStatus.RUNNING:
+                    terminal_ids.append(execution_id)
+            current_count = len(terminal_ids)
+            excess = current_count - max_records
+            if excess > 0:
+                oldest_ids = terminal_ids[:excess]
+                removed += self._delete_atomic_service_executions(oldest_ids)
+        return removed
+
+    def _load_atomic_service_execution(
+        self, execution_id: str
+    ) -> AtomicServiceExecution | None:
+        """Load one atomic-service execution record by id."""
+        raw_record = self.client.get(self.key.atomic_service_execution(execution_id))
+        if raw_record is None:
+            return None
+        try:
+            record = json.loads(self._decode_redis_value(raw_record))
+            return AtomicServiceExecution.from_raw(
+                runner_id=record["runner_id"],
+                atomic_service_run_id=record["atomic_service_run_id"],
+                start_time=datetime.fromisoformat(record["start_time"]),
+                end_time=(
+                    datetime.fromisoformat(record["end_time"])
+                    if record.get("end_time")
+                    else None
+                ),
+                status=AtomicServiceExecutionStatus(
+                    record.get("status", AtomicServiceExecutionStatus.RUNNING)
+                ),
+                reason=str(record.get("reason", "")),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _delete_atomic_service_executions(self, execution_ids: list[str]) -> int:
+        """Delete atomic-service execution records and their time index entries."""
+        if not execution_ids:
+            return 0
+        pipeline = self.client.pipeline(transaction=True)
+        pipeline.zrem(self.key.atomic_service_executions(), *execution_ids)
+        pipeline.delete(
+            *(
+                self.key.atomic_service_execution(execution_id)
+                for execution_id in execution_ids
+            )
+        )
+        pipeline.execute()
+        return len(execution_ids)
+
+    @staticmethod
+    def _decode_redis_value(value: bytes | str) -> str:
+        """Decode Redis byte responses while keeping string responses unchanged."""
+        return value.decode() if isinstance(value, bytes) else value
 
     def _get_runner_heartbeat_data(self) -> list[tuple[str, dict[bytes, bytes]]]:
         """
@@ -704,7 +1002,7 @@ class RedisOrchestrator(BaseOrchestrator):
 
         :param float timeout_seconds: Heartbeat timeout in seconds (typically from atomic_service_runner_considered_dead_after_minutes config)
         :param bool | None can_run_atomic_service: If specified, filters runners based on their eligibility to run atomic services
-        :return: List of active runners ordered by creation time (oldest first)
+        :return: List of active runners ordered by creation time, then runner ID
         :rtype: list["ActiveRunnerInfo"]
         """
         cutoff_time = time() - timeout_seconds
@@ -723,22 +1021,6 @@ class RedisOrchestrator(BaseOrchestrator):
             try:
                 last_heartbeat = float(runner_data[b"last_heartbeat"].decode())
 
-                # Optional service execution timestamps
-                last_service_start = (
-                    datetime.fromtimestamp(
-                        float(runner_data[b"last_service_start"].decode()), tz=UTC
-                    )
-                    if b"last_service_start" in runner_data
-                    else None
-                )
-                last_service_end = (
-                    datetime.fromtimestamp(
-                        float(runner_data[b"last_service_end"].decode()), tz=UTC
-                    )
-                    if b"last_service_end" in runner_data
-                    else None
-                )
-
                 active_runners.append(
                     ActiveRunnerInfo(
                         runner_id=runner_id,
@@ -747,13 +1029,12 @@ class RedisOrchestrator(BaseOrchestrator):
                         ),
                         allow_to_run_atomic_service=can_run_atomic,
                         last_heartbeat=datetime.fromtimestamp(last_heartbeat, tz=UTC),
-                        last_service_start=last_service_start,
-                        last_service_end=last_service_end,
                     )
                 )
             except (ValueError, KeyError):
                 continue
 
+        active_runners.sort(key=lambda runner: (runner.creation_time, runner.runner_id))
         return active_runners
 
     def get_pending_invocations_for_recovery(self) -> Iterator["InvocationId"]:

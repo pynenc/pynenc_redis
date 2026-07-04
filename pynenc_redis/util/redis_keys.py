@@ -114,6 +114,18 @@ class Key:
     def runner_heartbeats(self) -> str:
         return f"{self.prefix}runner_heartbeats"
 
+    def atomic_service_executions(self) -> str:
+        """Sorted set of atomic-service execution ids ordered by start time."""
+        return f"{self.prefix}atomic_service_executions"
+
+    def atomic_service_active_execution(self) -> str:
+        """Current atomic-service execution id while a run is active."""
+        return f"{self.prefix}atomic_service_active_execution"
+
+    def atomic_service_execution(self, execution_id: str) -> str:
+        """JSON storage for one atomic-service execution record."""
+        return f"{self.prefix}atomic_service_execution:{execution_id}"
+
     def history(self, invocation_id: str) -> str:
         return f"{self.prefix}history:{invocation_id}"
 
@@ -201,6 +213,59 @@ class Key:
         :return: Redis key for task's source conditions
         """
         return f"{self.prefix}source_task_conditions:{task_id}"
+
+    # ── Monitoring keys (events + trigger runs) ────────────────────────
+    def event_hash(self, event_id: str) -> str:
+        """JSON storage for one ``EventRecord``."""
+        return f"{self.prefix}evts_hash:{event_id}"
+
+    def events_by_time(self) -> str:
+        """Sorted set of ``event_id`` ordered by epoch-millisecond timestamp."""
+        return f"{self.prefix}evts_by_time"
+
+    def events_by_code(self, event_code: str) -> str:
+        """Sorted set of ``event_id`` for a single ``event_code``."""
+        return f"{self.prefix}evts_by_code:{event_code}"
+
+    def events_codes(self) -> str:
+        """Set of distinct ``event_code`` values seen so far."""
+        return f"{self.prefix}evts_codes"
+
+    def events_matched(self) -> str:
+        """Sorted set of matched event ids by timestamp."""
+        return f"{self.prefix}evts_matched"
+
+    def events_triggered(self) -> str:
+        """Sorted set of events that produced at least one invocation."""
+        return f"{self.prefix}evts_triggered"
+
+    def trigger_run_hash(self, trigger_run_id: str) -> str:
+        """JSON storage for one ``TriggerRunRecord``."""
+        return f"{self.prefix}trun_hash:{trigger_run_id}"
+
+    def trigger_runs_by_time(self) -> str:
+        """Sorted set of ``trigger_run_id`` ordered by epoch-millisecond time."""
+        return f"{self.prefix}truns_by_time"
+
+    def trigger_runs_for_event(self, event_id: str) -> str:
+        """Set of trigger run ids that reference an event."""
+        return f"{self.prefix}truns_for_event:{event_id}"
+
+    def trigger_runs_for_invocation(self, invocation_id: str) -> str:
+        """Set of trigger run ids that produced an invocation."""
+        return f"{self.prefix}truns_for_invocation:{invocation_id}"
+
+    def trigger_runs_sourced_by_invocation(self, invocation_id: str) -> str:
+        """Set of trigger run ids that used an invocation as source."""
+        return f"{self.prefix}truns_sourced_by_invocation:{invocation_id}"
+
+    def trigger_runs_for_valid_condition(self, valid_condition_id: str) -> str:
+        """Set of trigger run ids that included a valid condition."""
+        return f"{self.prefix}truns_for_valid_condition:{valid_condition_id}"
+
+    def event_triggered_invocations(self, event_id: str) -> str:
+        """Ordered list of invocation ids triggered by an event."""
+        return f"{self.prefix}evts_triggered_invocations:{event_id}"
 
     def trigger_execution_claim(self, trigger_id: str, valid_condition_id: str) -> str:
         """
@@ -299,6 +364,15 @@ class Key:
         :return: Redis key for parent's child invocations set
         """
         return f"{self.prefix}parent_invocation_children:{parent_invocation_id}"
+
+    def parent_event_children(self, parent_event_id: str) -> str:
+        """
+        Get key for storing invocation IDs spawned by a trigger event.
+
+        :param parent_event_id: The parent event ID
+        :return: Redis key for event-triggered child invocations
+        """
+        return f"{self.prefix}parent_event_children:{parent_event_id}"
 
     def workflow_invocations(self, workflow_id: str) -> str:
         """
