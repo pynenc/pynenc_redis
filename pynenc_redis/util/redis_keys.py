@@ -150,8 +150,13 @@ class Key:
         """Get key for sorted set of invocation IDs for a task indexed by registration time."""
         return f"{self.prefix}task_invocations_by_time:{task_id}"
 
-    def default_queue(self) -> str:
-        return f"{self.prefix}default_queue"
+    def broker_queue(self, queue_name: str) -> str:
+        queue_name = sanitize_for_redis(queue_name)
+        return f"{self.prefix}queue:{queue_name}"
+
+    def broker_sequence(self) -> str:
+        """Counter used to preserve FIFO ordering among equal priorities."""
+        return f"{self.prefix}queue_sequence"
 
     def client_data_store(self, key: str) -> str:
         return f"{self.prefix}client_data_store:{key}"
