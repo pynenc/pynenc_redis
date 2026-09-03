@@ -1036,13 +1036,17 @@ wheels = [
 [[package]]
 name = "pynenc"
 version = "0.4.0"
-source = { editable = "../pynenc" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cistell" },
     { name = "croniter" },
     { name = "jsonpickle" },
     { name = "pyyaml" },
     { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/08/0b002cac249570d056f54ff8a0ac1a2653365e6659764c1cacd276fa8ac0/pynenc-0.4.0.tar.gz", hash = "sha256:742eec1a6ab8c172deb9ff6c61e004f396d45750834a140cc351415446a384a5", size = 4944015, upload-time = "2026-09-03T05:39:07.595Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ac/a0/f0e5833e14e213a1520c68b696edbfc51539b2722234aea7080a32225e6d/pynenc-0.4.0-py3-none-any.whl", hash = "sha256:a81fbcc544ec1f619f8af1a287f2bdd524729a29e762c7e2bb68658cb99b1f26", size = 1254977, upload-time = "2026-09-03T05:39:05.295Z" },
 ]
 
 [package.optional-dependencies]
@@ -1066,45 +1070,6 @@ tests = [
     { name = "requests" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cistell", specifier = ">=0.1.2" },
-    { name = "coverage", extras = ["toml"], marker = "extra == 'tests'", specifier = ">=7.2.6" },
-    { name = "croniter", specifier = ">=6.0.0" },
-    { name = "fastapi", marker = "extra == 'monitor'", specifier = ">=0.115.0" },
-    { name = "httpx", marker = "extra == 'tests'", specifier = ">=0.27.0" },
-    { name = "jinja2", marker = "extra == 'monitor'", specifier = ">=3.1.0" },
-    { name = "jsonpickle", specifier = ">=4.1.0" },
-    { name = "mypy", marker = "extra == 'tests'", specifier = ">=1.7.0" },
-    { name = "pre-commit", marker = "extra == 'tests'", specifier = ">=3.5.0" },
-    { name = "psutil", marker = "extra == 'tests'", specifier = ">=7.0.0" },
-    { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.4.4" },
-    { name = "pytest-asyncio", marker = "extra == 'tests'", specifier = ">=0.18.3" },
-    { name = "pytest-cov", marker = "extra == 'tests'", specifier = ">=6.0.0" },
-    { name = "pytest-timeout", marker = "extra == 'tests'", specifier = ">=2.2.0" },
-    { name = "pytest-xdist", marker = "extra == 'tests'", specifier = ">=3.5.0" },
-    { name = "python-multipart", marker = "extra == 'monitor'", specifier = ">=0.0.6" },
-    { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "requests", marker = "extra == 'tests'", specifier = ">=2.31.0" },
-    { name = "types-pyyaml", marker = "extra == 'tests'", specifier = ">=6.0.0" },
-    { name = "types-requests", marker = "extra == 'tests'", specifier = ">=2.32.0" },
-    { name = "typing-extensions", specifier = ">=4.9.0" },
-    { name = "uvicorn", marker = "extra == 'monitor'", specifier = ">=0.34.0" },
-]
-provides-extras = ["monitor", "tests"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "black", specifier = "==26.3.1" }]
-docs = [
-    { name = "furo", specifier = ">=2024" },
-    { name = "myst-parser", specifier = ">=4.0" },
-    { name = "sphinx", specifier = ">=8.0,<10" },
-    { name = "sphinx-autodoc2", specifier = ">=0.5.0" },
-    { name = "sphinx-copybutton", specifier = ">=0.5.2" },
-    { name = "sphinx-design", specifier = ">=0.6.0" },
-    { name = "sphinx-inline-tabs", specifier = ">=2023.4.21" },
 ]
 
 [[package]]
@@ -1150,7 +1115,7 @@ tests = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pynenc", editable = "../pynenc" },
+    { name = "pynenc", specifier = ">=0.4.0" },
     { name = "redis", specifier = ">=4.6.0" },
 ]
 
@@ -1179,8 +1144,8 @@ docs = [
     { name = "sphinx-design", specifier = ">=0.6.0" },
     { name = "sphinx-inline-tabs", specifier = ">=2023.4.21" },
 ]
-monitor = [{ name = "pynenc", extras = ["monitor"], editable = "../pynenc" }]
-tests = [{ name = "pynenc", extras = ["tests"], editable = "../pynenc" }]
+monitor = [{ name = "pynenc", extras = ["monitor"], specifier = ">=0.4.0" }]
+tests = [{ name = "pynenc", extras = ["tests"], specifier = ">=0.4.0" }]
 
 [[package]]
 name = "pytest"

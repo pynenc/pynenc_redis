@@ -22,10 +22,6 @@ dependencies = [
     "redis>=4.6.0"
 ]
 
-[tool.uv.sources]
-pynenc = { path = "../pynenc", editable = true }
-
-
 [project.urls]
 Homepage = "https://pynenc.org"
 Documentation = "https://docs.pynenc.org/plugins/redis"
