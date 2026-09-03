@@ -1,6 +1,6 @@
 [project]
 name = "pynenc-redis"
-version = "0.3.0"
+version = "0.4.0"
 description = "Redis plugging for pynenc, a distributed task queue for Python."
 authors = [{ name = "Luis Diaz", email = "code.luis.diaz@proton.me" }]
 license = { text = "MIT License" }
@@ -18,10 +18,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "pynenc>=0.3.0",
+    "pynenc>=0.4.0",
     "redis>=4.6.0"
 ]
-
 
 [project.urls]
 Homepage = "https://pynenc.org"
@@ -53,10 +52,10 @@ dev = [
     "psutil>=7.0.0",
 ]
 tests = [
-    "pynenc[tests]>=0.3.0",
+    "pynenc[tests]>=0.4.0",
 ]
 monitor = [
-    "pynenc[monitor]>=0.3.0",
+    "pynenc[monitor]>=0.4.0",
 ]
 docs = [
     "sphinx>=8.0,<9",

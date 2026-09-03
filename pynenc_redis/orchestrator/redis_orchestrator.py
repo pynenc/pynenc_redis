@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
 from time import time
@@ -610,7 +610,10 @@ class RedisOrchestrator(BaseOrchestrator):
         return filtered
 
     def register_runner_heartbeats(
-        self, runner_ids: list[str], can_run_atomic_service: bool = False
+        self,
+        runner_ids: list[str],
+        can_run_atomic_service: bool = False,
+        consumed_queues: Sequence[str] | None = None,
     ) -> None:
         """
         Register or update runners' heartbeat timestamp and atomic service eligibility.
@@ -619,6 +622,7 @@ class RedisOrchestrator(BaseOrchestrator):
         :param can_run_atomic_service: Whether runners are eligible for atomic service
         """
         current_time = time()
+        queues_json = json.dumps(tuple(consumed_queues or ()))
         pipeline = self.client.pipeline(transaction=True)
 
         for runner_id in runner_ids:
@@ -638,6 +642,7 @@ class RedisOrchestrator(BaseOrchestrator):
                 mapping={
                     "last_heartbeat": current_time,
                     "can_run_atomic_service": int(can_run_atomic_service),
+                    "consumed_queues": queues_json,
                 },
             )
 
@@ -1029,6 +1034,11 @@ class RedisOrchestrator(BaseOrchestrator):
                         ),
                         allow_to_run_atomic_service=can_run_atomic,
                         last_heartbeat=datetime.fromtimestamp(last_heartbeat, tz=UTC),
+                        consumed_queues=tuple(
+                            json.loads(
+                                runner_data.get(b"consumed_queues", b"[]").decode()
+                            )
+                        ),
                     )
                 )
             except (ValueError, KeyError):
