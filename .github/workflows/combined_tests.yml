@@ -9,19 +9,19 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11.7"
 
       - name: Cache uv
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
@@ -36,7 +36,7 @@ jobs:
       - run: uv run coverage html --show-contexts --title "Unit Test Coverage for ${{ github.sha }}"
 
       - name: Upload unit test coverage HTML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-html-unit
           path: htmlcov
@@ -47,7 +47,7 @@ jobs:
           ls -la coverage.unit
 
       - name: Upload unit test coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-data-unit
           path: coverage.unit
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     container: python:3.11.7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         run: |
@@ -64,7 +64,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Cache uv
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
@@ -79,7 +79,7 @@ jobs:
       - run: uv run coverage html --show-contexts --title "Integration Test Coverage for ${{ github.sha }}"
 
       - name: Upload integration test coverage HTML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-html-integration
           path: htmlcov
@@ -90,7 +90,7 @@ jobs:
           ls -la coverage.integration
 
       - name: Upload integration test coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-data-integration
           path: coverage.integration
@@ -99,14 +99,14 @@ jobs:
     needs: [unit-tests, integration-tests]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11.7"
 
@@ -114,7 +114,7 @@ jobs:
         run: uv sync --group tests --group monitor
 
       - name: Download all coverage artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: "coverage-data-*"
           path: .
@@ -130,7 +130,7 @@ jobs:
       - run: uv run coverage html --show-contexts --title "Combined Test Coverage"
 
       - name: Upload combined test coverage HTML
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-html
           path: htmlcov
