@@ -1033,7 +1033,7 @@ dev = [
     { name = "ruff", specifier = ">=0.14.0" },
     { name = "testcontainers", extras = ["redis"], specifier = ">=4.13.0" },
     { name = "types-pyyaml", specifier = "==6.0.12.12" },
-    { name = "types-redis", specifier = "==4.6.0.2" },
+    { name = "types-redis", specifier = "==4.6.0.20241004" },
     { name = "types-requests", specifier = ">=2.32.0.20250602" },
 ]
 docs = [
@@ -1540,15 +1540,15 @@ wheels = [
 
 [[package]]
 name = "types-redis"
-version = "4.6.0.2"
+version = "4.6.0.20241004"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "types-pyopenssl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/a3/07520fefbe92b37261138b6d30c9e713d73968018aa5f9421f4cf645ffef/types-redis-4.6.0.2.tar.gz", hash = "sha256:d0efcd96f65fd2036437c29d8c12566cfdc549345d73eddacb0488b81aff9f9e", size = 47501, upload-time = "2023-07-04T12:35:42.241Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/95/c054d3ac940e8bac4ca216470c80c26688a0e79e09f520a942bb27da3386/types-redis-4.6.0.20241004.tar.gz", hash = "sha256:5f17d2b3f9091ab75384153bfa276619ffa1cf6a38da60e10d5e6749cc5b902e", size = 49679, upload-time = "2024-10-04T02:43:59.224Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/27/8249db5cc2747bf49058005dad3b0a1f6cb5a2817a130cf260edd2fc6234/types_redis-4.6.0.2-py3-none-any.whl", hash = "sha256:a98f3386f44d045057696f3efc8869c53dda0060610e0fe3d8a4d391e2a8916a", size = 57081, upload-time = "2023-07-04T12:35:40.594Z" },
+    { url = "https://files.pythonhosted.org/packages/55/82/7d25dce10aad92d2226b269bce2f85cfd843b4477cd50245d7d40ecf8f89/types_redis-4.6.0.20241004-py3-none-any.whl", hash = "sha256:ef5da68cb827e5f606c8f9c0b49eeee4c2669d6d97122f301d3a55dc6a63f6ed", size = 58737, upload-time = "2024-10-04T02:43:57.968Z" },
 ]
 
 [[package]]
