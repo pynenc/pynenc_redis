@@ -3,6 +3,13 @@
 All settings can be provided via the builder, environment variables, or YAML config files.
 See the [Pynenc configuration guide](https://pynenc.readthedocs.io/en/latest/configuration/index.html) for the general mechanism.
 
+## Broker Queues and Priorities
+
+`RedisBroker` uses one sorted set per logical queue. Scores retain Pynenc float
+priorities and a server-side sequence preserves FIFO order among equal scores.
+The storage shape changed in 0.4.0; pending pre-0.4 broker keys are not migrated
+and must be cleared or recreated before upgrading.
+
 ## Connection Settings — `ConfigRedis`
 
 Shared by all Redis-backed components.

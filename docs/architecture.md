@@ -38,7 +38,8 @@ block the Redis server.
 | Redis Type      | Usage                                                                        |
 | --------------- | ---------------------------------------------------------------------------- |
 | **Strings**     | Invocation data, status records, results, exceptions, timestamps             |
-| **Lists**       | Broker FIFO queue (`LPUSH` / `BLPOP`), invocation history                    |
+| **Sorted sets** | Broker priority queues (`ZADD` / `ZPOPMAX`), timestamp indexes               |
+| **Lists**       | Invocation history                                                           |
 | **Sets**        | Invocations by status, task membership, trigger/condition relationships      |
 | **Sorted Sets** | Time-indexed invocations (pagination), auto-purge tracking, blocking control |
 
