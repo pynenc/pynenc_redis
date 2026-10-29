@@ -37,7 +37,7 @@ The `pynenc-redis` plugin provides all five Pynenc backend components running on
 | Component             | Class                  | Role                                                  |
 | --------------------- | ---------------------- | ----------------------------------------------------- |
 | **Orchestrator**      | `RedisOrchestrator`    | Distributed status tracking & blocking control        |
-| **Broker**            | `RedisBroker`          | FIFO message queue via Redis lists with blocking pop  |
+| **Broker**            | `RedisBroker`          | Named priority queues via Redis sorted sets           |
 | **State Backend**     | `RedisStateBackend`    | Persistent state, results, exceptions & workflow data |
 | **Client Data Store** | `RedisClientDataStore` | Argument caching for large serialized payloads        |
 | **Trigger**           | `RedisTrigger`         | Event-driven & cron-based task scheduling             |
@@ -79,6 +79,14 @@ pynenc --app=tasks.app runner start
 For a complete working example with Docker Compose and multiple workers, see the [basic_redis_example](https://github.com/pynenc/samples/tree/main/basic_redis_example) in the pynenc samples repository.
 
 ## Configuration
+
+### Queues and Priorities
+
+Redis stores one sorted set per logical queue. The score is Pynenc's native
+float priority, and a Redis sequence preserves FIFO order when scores match.
+Runners may consume all configured queues or an explicit subset. The 0.4 broker
+storage shape does not migrate pending pre-0.4 broker keys; clear or recreate
+broker data before upgrading.
 
 ### Builder Parameters
 
@@ -142,7 +150,7 @@ PYNENC__REDIS__REDIS_DB=0
 ## Requirements
 
 - Python >= 3.12
-- Pynenc >= 0.3.0
+- Pynenc >= 0.4.0
 - redis >= 4.6.0
 - A running Redis server
 

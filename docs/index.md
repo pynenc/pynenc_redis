@@ -21,7 +21,7 @@ pip install pynenc-redis
 | Component             | Class                  | Role                                                  |
 | --------------------- | ---------------------- | ----------------------------------------------------- |
 | **Orchestrator**      | `RedisOrchestrator`    | Distributed status tracking & blocking control        |
-| **Broker**            | `RedisBroker`          | FIFO message queue via Redis lists with blocking pop  |
+| **Broker**            | `RedisBroker`          | Named priority queues via Redis sorted sets           |
 | **State Backend**     | `RedisStateBackend`    | Persistent state, results, exceptions & workflow data |
 | **Client Data Store** | `RedisClientDataStore` | Argument caching for large serialized payloads        |
 | **Trigger**           | `RedisTrigger`         | Event-driven & cron-based task scheduling             |
